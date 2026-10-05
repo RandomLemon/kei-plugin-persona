@@ -96,7 +96,7 @@ addressed = 私聊 || mention || reply_to_self || keyword
 ## 7.5 生成与发送
 
 - **信号量**：全局 `limits_max_concurrent`（默认 2），`TryAcquire` 非阻塞获取；失败记 `semaphore_full`，丢弃本轮，不排队。获取成功 `defer Release`。
-- **epoch 机制**：生成协程捕获发起时的 `epoch`。`/persona off`、`/persona persona`、`/persona reset` 会递增 `epoch`；回调或生成协程发现 `st.epoch != captured` 即丢弃结果，reason `stale`。这保证「刚被关掉或刚换人格的会话，旧在途结果不落地」。
+- **epoch 机制**：生成协程捕获发起时的 `epoch`。`/persona off`、`/persona switch`、`/persona reset` 会递增 `epoch`；回调或生成协程发现 `st.epoch != captured` 即丢弃结果，reason `stale`。这保证「刚被关掉或刚换人格的会话，旧在途结果不落地」。
 - **发送**：按会话类型分派，**不用** `TargetFromEvent`：
   - 群聊：`message.Group(segs...)` + `bot.Target{Platform, BotID, ChannelID, Kind: bot.MessageGroup}`（不填 `UserID`）；
   - 私聊：`message.Private(segs...)` + `bot.Target{Platform, BotID, UserID: 对端用户 ID, Kind: bot.MessagePrivate}`（不填 `ChannelID`）。

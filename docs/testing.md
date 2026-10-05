@@ -82,7 +82,7 @@ go test -race ./...
 | 清洗管线 8 步（见 [`persona.md`](persona.md) §8.7） | 每条输入→输出样例一致 |
 | 在途写穿透未完成时调用 `Stop`（`Set` 阻塞到 gate 关闭） | `Stop` 先拒绝新写入并等其落库、再取消插件级 ctx：写入不被取消，`Stop` 在其结束后才返回（持久化后端不丢最后一次覆盖/策略） |
 | `/persona status` | 输出固定字段顺序一行 |
-| `/persona persona` | 输出 `persona: persona=<name> 来源=<override\|binding\|default>` |
+| `/persona switch` | 输出 `persona: persona=<name> 来源=<override\|binding\|default>` |
 | `/persona on`、`/persona off` | 切换开关，触发 `Storage.Set`，关闭时递增 `st.epoch` |
 | `/persona reset` | 清历史/覆盖/计数器，置为开启，递增 `st.epoch` |
 | `llm.go` 用 `httptest.Server`：200 | 返回解析后的文本 content |

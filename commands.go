@@ -9,7 +9,7 @@ import (
 )
 
 func personaUsage() string {
-	return "用法: /persona status | persona [name] | on | off | reset | policy [group|private mode] | list [group|private [add|del id]]"
+	return "用法: /persona status | switch [name] | on | off | reset | policy [group|private mode] | list [group|private [add|del id]]"
 }
 
 // handleCommand 处理 /persona 管理命令。
@@ -25,7 +25,7 @@ func (p *Plugin) handleCommand(ctx context.Context, ev *bot.Event, r bot.Reply) 
 	switch args[0] {
 	case "status":
 		return r.Text(p.statusLine(st)).Send(ctx)
-	case "persona":
+	case "switch":
 		if len(args) == 1 {
 			name, src := p.resolvePersona(st)
 			return r.Text(fmt.Sprintf("persona: persona=%s 来源=%s", name, src)).Send(ctx)

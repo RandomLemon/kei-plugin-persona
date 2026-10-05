@@ -85,7 +85,7 @@ plugins:
 | 子命令 | 行为 |
 | --- | --- |
 | `/persona status` | 输出开关、当前人格与来源、历史条数、小时配额、错误/跳过计数 |
-| `/persona persona [name]` | 查看或切换当前会话人格（写运行时覆盖并持久化） |
+| `/persona switch [name]` | 查看或切换当前会话人格（写运行时覆盖并持久化） |
 | `/persona on` / `off` / `reset` | 开关本会话 / 清历史与覆盖 |
 | `/persona policy [group\|private mode]` | 查看或设置名单模式 |
 | `/persona list [group\|private [add\|del id]]` | 查看或增删名单项 |

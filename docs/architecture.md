@@ -189,7 +189,7 @@ type channelState struct {
 
 - `history` 环形，容量 `context_max_messages`，`appendHistory` 超出后从最旧丢弃。
 - `replyTimes` 只保留近 1 小时（`repliesInWindow` 读取时顺带裁剪）。
-- `epoch` 是「状态代次」：`/persona off`、`/persona persona`、`/persona reset` 递增。定时器回调与生成协程捕获发起时的 `epoch`，发现不一致就丢弃结果（reason `stale`）。
+- `epoch` 是「状态代次」：`/persona off`、`/persona switch`、`/persona reset` 递增。定时器回调与生成协程捕获发起时的 `epoch`，发现不一致就丢弃结果（reason `stale`）。
 - `loaded` 表示 Storage 懒加载是否完成。未完成前 Handler 不阻塞等待：把本条消息**暂存进 `pending` 单槽**并记 reason `loading`，加载完成后由 `restoreState` 调 `decide` **补判一次**（见 §4.5）。
 - `pending` 是「懒加载期间暂存待判消息」的有界单槽（`*pendingInbound{ev, text, epoch}`）：加载完成前同一会话只保留最新一条，更早的已进 `history`、仍随本轮生成交给 LLM。暂存/取走同在 `st.mu` 临界区内，消息要么立即判定、要么恰好补判一次，不会被吞掉；`epoch` 变化（`/persona reset`）时暂存作废。带 `pending` 的状态不参与 LRU 淘汰（见 §4.3）。
 - `disabled` 表示该会话被 `/persona off` 关闭。

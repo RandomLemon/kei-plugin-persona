@@ -34,7 +34,7 @@ personas:
 
 - `default_persona` 默认 `default`。
 - 必须存在 `personas[default_persona]`，否则 `Setup` 返回错误并点名缺失的预设。
-- `bindings[].persona` 与 `/persona persona <name>` 引用的名字必须存在，否则报错（配置阶段）或命令回绝（运行阶段）。
+- `bindings[].persona` 与 `/persona switch <name>` 引用的名字必须存在，否则报错（配置阶段）或命令回绝（运行阶段）。
 - `prompt` 为空的条目视为错误并点名。
 - 校验错误文案见 [`configuration.md`](configuration.md) §10.4。
 
@@ -67,7 +67,7 @@ bindings:
 | 平台 `feishu`、频道 `g1` | 第 1、2 行（第 2 行非空字段更多） | `deadpan` |
 | 平台 `feishu`、bot `feishu-main`、频道 `g2` | 第 1、3 行（第 3 行非空字段更多） | `deadpan` |
 | 平台 `onebot`、频道 `g9` | 无 | `default_persona` |
-| 平台 `onebot`、频道 `g1`，且已 `/persona persona default` | 覆盖优先 | `default` |
+| 平台 `onebot`、频道 `g1`，且已 `/persona switch default` | 覆盖优先 | `default` |
 
 ## 8.4 运行时覆盖与 `/persona` 命令
 
@@ -83,8 +83,8 @@ reg.OnCommand("persona", p.handleCommand,
 | 子命令 | 行为 |
 | --- | --- |
 | `status` | 输出固定字段顺序的一行（见下） |
-| `persona` | 打印当前预设名 + 来源 |
-| `persona <name>` | 校验存在 → 写运行时覆盖 → 持久化 → `epoch++` |
+| `switch` | 打印当前预设名 + 来源 |
+| `switch <name>` | 校验存在 → 写运行时覆盖 → 持久化 → `epoch++` |
 | `on` | 置 `disabled=false`，持久化 |
 | `off` | 置 `disabled=true`，停止定时器，`epoch++`，持久化 |
 | `reset` | 清历史/覆盖/计数器，置 `on`，`epoch++`，持久化 |
@@ -100,7 +100,7 @@ reg.OnCommand("persona", p.handleCommand,
 用法文本（逐字）：
 
 ```text
-用法: /persona status | persona [name] | on | off | reset | policy [group|private mode] | list [group|private [add|del id]]
+用法: /persona status | switch [name] | on | off | reset | policy [group|private mode] | list [group|private [add|del id]]
 ```
 
 `policy`/`list` 的输出行（逐字，语义与空名单行为见 [`participation.md`](participation.md) §7.8）：
@@ -124,7 +124,7 @@ persona: 开 · persona=tsundere(override) · 历史 18 条 · 近 1 小时回�
 
 字段含义依次为：开关（`开`/`关`）、当前人格与来源（`(override)`/`(binding)`/`(default)`，无覆盖时为 `(binding)` 或 `(default)`）、当前历史条数、近 1 小时回复数/上限（`3/6`）、距上次回复的相对时间（`42s 前`，无回复时写 `从未`）、LLM 错误数、跳过数。
 
-**`/persona persona`（无参数）输出（逐字）**：
+**`/persona switch`（无参数）输出（逐字）**：
 
 ```text
 persona: persona=tsundere 来源=override
