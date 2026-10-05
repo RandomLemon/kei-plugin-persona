@@ -128,7 +128,7 @@ func TestRenderUserContentVisionOff(t *testing.T) {
 		{Name: "张三", Text: "今晚谁去打球", ImageURLs: []string{"http://x/1.jpg"}},
 		{Name: "李四", Text: "我可能不行"},
 	}
-	parts := env.p.renderUserContent(bot.MessageGroup, history)
+	parts := env.p.renderUserContent(bot.MessageGroup, history, nil)
 	if len(parts) != 1 || parts[0].Type != "text" {
 		t.Fatalf("关闭态应只有 text 块: %#v", parts)
 	}
@@ -140,62 +140,27 @@ func TestRenderUserContentVisionOff(t *testing.T) {
 	}
 }
 
-// TestRenderUserContentVisionOn 锁定开关态：text 块 + 按时间序的最后 N 张图。
+// TestRenderUserContentVisionOn 锁定开启态：text 块 + 逐个 images 项的 image_url 块。
 func TestRenderUserContentVisionOn(t *testing.T) {
-	env := newTestEnv(t, nil, func(c map[string]any) {
-		c["llm_vision_enabled"] = true
-		c["llm_vision_max_images"] = 2
-	})
+	env := newTestEnv(t, nil, nil)
 	history := []Turn{
-		{Name: "张三", Text: "a", ImageURLs: []string{"http://x/1.jpg", "http://x/1b.jpg"}},
-		{Name: "李四", Text: "b", ImageURLs: []string{"http://x/2.jpg"}},
-		{Name: "王五", Text: "c", ImageURLs: []string{"http://x/3.jpg"}},
+		{Name: "张三", Text: "a"},
+		{Name: "李四", Text: "b"},
+		{Name: "王五", Text: "c"},
 	}
-	parts := env.p.renderUserContent(bot.MessageGroup, history)
+	images := []string{"data:image/png;base64,AAAA", "data:image/png;base64,BBBB"}
+	parts := env.p.renderUserContent(bot.MessageGroup, history, images)
 	if len(parts) != 3 {
 		t.Fatalf("应为 text + 2 张图: %#v", parts)
 	}
 	if parts[0].Type != "text" || parts[0].Text != "[群聊记录]\n张三: a\n李四: b\n王五: c\n\n" {
 		t.Fatalf("text 块 = %#v", parts[0])
 	}
-	// 每条消息最多 1 张（visionMaxImagesPerTurn），故候选为 1.jpg/2.jpg/3.jpg，取最后 2 张。
-	want := []string{"http://x/2.jpg", "http://x/3.jpg"}
-	for i, w := range want {
+	for i, w := range images {
 		p := parts[i+1]
 		if p.Type != "image_url" || p.ImageURL == nil || p.ImageURL.URL != w {
 			t.Fatalf("图片块[%d] = %#v, want %q", i, p, w)
 		}
-	}
-}
-
-// TestRenderUserContentVisionZero 锁定 llm_vision_max_images=0 等价于不附加。
-func TestRenderUserContentVisionZero(t *testing.T) {
-	env := newTestEnv(t, nil, func(c map[string]any) {
-		c["llm_vision_enabled"] = true
-		c["llm_vision_max_images"] = 0
-	})
-	history := []Turn{{Name: "张三", Text: "a", ImageURLs: []string{"http://x/1.jpg"}}}
-	if parts := env.p.renderUserContent(bot.MessageGroup, history); len(parts) != 1 {
-		t.Fatalf("上限 0 时不应附加图片: %#v", parts)
-	}
-}
-
-// TestRenderUserContentVisionTrimmed 锁定图片取自与文本块同一裁剪结果。
-func TestRenderUserContentVisionTrimmed(t *testing.T) {
-	env := newTestEnv(t, nil, func(c map[string]any) {
-		c["llm_vision_enabled"] = true
-		c["llm_history_max_chars"] = 3
-	})
-	history := []Turn{
-		{Name: "甲", Text: "aaa", ImageURLs: []string{"http://x/old.jpg"}},
-		{Name: "乙", Text: "bbb", ImageURLs: []string{"http://x/new.jpg"}},
-	}
-	parts := env.p.renderUserContent(bot.MessageGroup, history)
-	if parts[0].Text != "[群聊记录]\n乙: bbb\n\n" {
-		t.Fatalf("text 块 = %q", parts[0].Text)
-	}
-	if len(parts) != 2 || parts[1].ImageURL.URL != "http://x/new.jpg" {
-		t.Fatalf("被裁掉的条目里的图片不应发送: %#v", parts)
 	}
 }
 

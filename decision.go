@@ -341,9 +341,11 @@ func (p *Plugin) generate(st *channelState, epoch uint64, history []Turn) {
 	personaName, _ := p.resolvePersona(st)
 	pf := p.cfg.personas[personaName]
 
+	urls := p.selectVisionURLs(history)
+	images := p.fetchImageDataURLs(p.ctx, urls)
 	req := completionRequest{
 		System:      p.renderSystemPrompt(personaName, st, history),
-		User:        p.renderUserContent(chatKind, history),
+		User:        p.renderUserContent(chatKind, history, images),
 		Temperature: pf.Temperature,
 		MaxTokens:   pf.MaxTokens,
 	}

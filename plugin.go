@@ -29,7 +29,9 @@ type Plugin struct {
 	api   bot.BotAPI
 	log   *slog.Logger
 	store bot.Storage
-	hc    *http.Client
+	// imgClient 是图片下载客户端（派生自 PluginContext.HTTPClient 的 transport，
+	// 装了地址限制拨号器）；单测可整体替换为桩。
+	imgClient *http.Client
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -89,7 +91,7 @@ func (p *Plugin) setup(pc bot.PluginContext, reg bot.Registrar) error {
 	p.api = pc.Bot
 	p.log = log
 	p.store = pc.Storage
-	p.hc = pc.HTTPClient
+	p.imgClient = newVisionClient(pc.HTTPClient)
 	p.now = time.Now
 	p.randFloat = rand.Float64
 	p.channels = make(map[string]*channelState)

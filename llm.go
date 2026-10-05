@@ -3,12 +3,14 @@ package persona
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -103,21 +105,17 @@ func (c *openaiClient) attempt(ctx context.Context, req completionRequest) (stri
 	actx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
-	payload := map[string]any{
-		"model":       c.model,
-		"temperature": req.Temperature,
-		"max_tokens":  req.MaxTokens,
-		"messages": []map[string]any{
-			{"role": "system", "content": req.System},
-			{"role": "user", "content": req.User},
-		},
-	}
+	payload := c.payload(req, false)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", false, fmt.Errorf("persona: 请求编码失败: %w", err)
 	}
 	if c.debug {
-		c.log.Debug("persona llm 请求", "host", hostOf(c.baseURL), "model", c.model, "body", truncateRunes(string(body), 2048))
+		redacted, rerr := json.Marshal(c.payload(req, true))
+		if rerr != nil {
+			redacted = []byte("<日志序列化失败>")
+		}
+		c.log.Debug("persona llm 请求", "host", hostOf(c.baseURL), "model", c.model, "body", truncateRunes(string(redacted), 2048))
 	}
 
 	endpoint := trimRightSlash(c.baseURL) + "/chat/completions"
@@ -161,6 +159,49 @@ func (c *openaiClient) attempt(ctx context.Context, req completionRequest) (stri
 		return "", false, err
 	}
 	return content, false, nil
+}
+
+// payload 构造请求体；redact 为真时把 image_url 的 data URL 折成
+// "data:<mime>;base64,<N bytes>"，仅用于 debug 日志（线上请求体从不折叠）。
+func (c *openaiClient) payload(req completionRequest, redact bool) map[string]any {
+	user := req.User
+	if redact {
+		user = redactedParts(req.User)
+	}
+	return map[string]any{
+		"model":       c.model,
+		"temperature": req.Temperature,
+		"max_tokens":  req.MaxTokens,
+		"messages": []map[string]any{
+			{"role": "system", "content": req.System},
+			{"role": "user", "content": user},
+		},
+	}
+}
+
+// redactedParts 复制 content 块，把 data URL 折叠为占位符，其余块原样引用。
+func redactedParts(parts contentParts) contentParts {
+	out := make(contentParts, len(parts))
+	for i, p := range parts {
+		if p.ImageURL != nil && strings.HasPrefix(p.ImageURL.URL, "data:") {
+			p.ImageURL = &imageURLPart{URL: shortenDataURL(p.ImageURL.URL)}
+		}
+		out[i] = p
+	}
+	return out
+}
+
+// shortenDataURL 把 "data:<mime>;base64,<b64>" 折成 "data:<mime>;base64,<N bytes>"，
+// N 为解码后的字节数（DecodedLen 减 padding 个数）；非 data URL 原样返回。
+func shortenDataURL(u string) string {
+	const marker = ";base64,"
+	i := strings.Index(u, marker)
+	if !strings.HasPrefix(u, "data:") || i < 0 {
+		return u
+	}
+	b64 := u[i+len(marker):]
+	n := base64.StdEncoding.DecodedLen(len(b64)) - strings.Count(b64, "=")
+	return fmt.Sprintf("%s;base64,%d bytes", u[:i], n)
 }
 
 // parseCompletion 解析 choices[0].message.content。

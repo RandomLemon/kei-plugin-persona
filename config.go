@@ -92,18 +92,19 @@ type config struct {
 	contextMaxMessages int
 	contextMaxChannels int
 
-	llmBaseURL         string
-	llmAPIKey          string
-	llmModel           string
-	llmTemperature     float64
-	llmMaxTokens       int
-	llmTimeout         time.Duration
-	llmMaxRetries      int
-	llmSkipToken       string
-	llmHistoryMaxChars int
-	llmExtraHeaders    map[string]string
-	llmVisionEnabled   bool
-	llmVisionMaxImages int
+	llmBaseURL             string
+	llmAPIKey              string
+	llmModel               string
+	llmTemperature         float64
+	llmMaxTokens           int
+	llmTimeout             time.Duration
+	llmMaxRetries          int
+	llmSkipToken           string
+	llmHistoryMaxChars     int
+	llmExtraHeaders        map[string]string
+	llmVisionEnabled       bool
+	llmVisionMaxImages     int
+	llmVisionMaxImageBytes int
 
 	replyMaxChars      int
 	replyMentionSender bool
@@ -143,6 +144,9 @@ func loadConfig(c *bot.Config) (*config, error) {
 	}
 	cfg.llmVisionEnabled = r.boolean("llm_vision_enabled", false)
 	if cfg.llmVisionMaxImages, err = r.intKey("llm_vision_max_images", 4, "必须 >= 0"); err != nil {
+		return nil, err
+	}
+	if cfg.llmVisionMaxImageBytes, err = r.intKey("llm_vision_max_image_bytes", 4<<20, "必须 >= 1"); err != nil {
 		return nil, err
 	}
 
@@ -243,6 +247,9 @@ func loadConfig(c *bot.Config) (*config, error) {
 		return nil, err
 	}
 	if err := needMinInt("llm_vision_max_images", cfg.llmVisionMaxImages, 0); err != nil {
+		return nil, err
+	}
+	if err := needMinInt("llm_vision_max_image_bytes", cfg.llmVisionMaxImageBytes, 1); err != nil {
 		return nil, err
 	}
 	if err := needMinInt("reply_max_chars", cfg.replyMaxChars, 1); err != nil {

@@ -92,8 +92,11 @@ go test -race ./...
 | `llm.go` 缺 choices | 返回错误 |
 | `llm.go` 超时（`llm_timeout` 极短） | 返回错误，`reason=llm_error` |
 | 多模态开关关闭（`llm_vision_enabled=false`） | 请求体 `messages[1].content` 为只含一个 `text` 块的数组，不含 `image_url`；文本与该历史下的 `renderHistoryBlock` 逐字相同 |
-| 多模态开关开启（`llm_vision_enabled=true`） | 请求体 `messages[1].content` 为数组，末元素为 `{"type":"image_url","image_url":{"url":...}}`；每条消息最多 1 张、总数受 `llm_vision_max_images` 限制、被文本裁剪丢掉的条目里的图片不发 |
-| `llm_vision_max_images` 校验 | `-1` → `persona: 配置错误 llm_vision_max_images=-1: 必须 >= 0`；默认 `4`、`llm_vision_enabled` 默认 `false`；`0` 时不附加图片块 |
+| 多模态开关开启（`llm_vision_enabled=true`） | 图片由插件下载后内联为 `data:<mime>;base64,<数据>`；请求体 `messages[1].content` 为数组，末元素为 `{"type":"image_url","image_url":{"url":"data:..."}}`；原始 URL 不出现在请求体中；每条消息最多 1 张、总数受 `llm_vision_max_images` 限制、被文本裁剪丢掉的条目里的图片不发 |
+| 图片下载失败路径 | 非 2xx、非 `image/*`、超过 `llm_vision_max_image_bytes`、连接失败的图各自被丢弃（`reason` 分别 `status`/`not_image`/`too_large`/`fetch_error`），其余图片与文本照常发送，不回落到传 URL |
+| 图片地址限制 | 回环/私网/链路本地/未指定/组播目标（含 DNS 解析结果）被拒；拨号时才校验（重定向同样受限）；`data:`/非 http(s) scheme 直接丢弃 |
+| `llm_vision_max_images` / `llm_vision_max_image_bytes` 校验 | `-1` → `persona: 配置错误 llm_vision_max_images=-1: 必须 >= 0`；`0` → `persona: 配置错误 llm_vision_max_image_bytes=0: 必须 >= 1`；默认 `4` / `4194304`，`llm_vision_enabled` 默认 `false`；`llm_vision_max_images=0` 时不附加图片块 |
+| `debug_prompts=true` 日志 | 请求日志中 data URL 为 `data:image/png;base64,<N bytes>`，不含完整 base64；响应日志不变 |
 
 reason 词表（24 个）单测覆盖：`not_group`、`not_private`、`no_sender`、`not_allowed`、`bot_sender`、`command`、`empty_text`、`too_short`、`channel_off`、`loading`、`not_addressed`、`min_participants`、`cooldown`、`hour_quota`、`quiet_hours`、`inflight`、`probability`、`semaphore_full`、`skipped_by_llm`、`empty_reply`、`duplicate_reply`、`llm_error`、`send_error`、`stale`。
 

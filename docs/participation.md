@@ -206,9 +206,11 @@ generate(st, epoch, history):
   personaName = resolvePersona(st)              # 覆盖 > bindings > default_persona
   st.mu.Unlock()
 
+  urls   = selectVisionURLs(history)                # 关闭视觉或无图片时为空
+  images = p.fetchImageDataURLs(p.ctx, urls)        # 下载失败/超限的图丢弃，其余保序
   req = completionRequest{
     System:      renderSystemPrompt(personaName, st, history),
-    User:        renderUserContent(st.kind, history),   # content 数组：text 块 + 可选 image_url
+    User:        renderUserContent(st.kind, history, images),   # content 数组：text 块 + 已内联的 image_url 块
     Temperature: personaTemperature(personaName),   # 默认 llm_temperature
     MaxTokens:   personaMaxTokens(personaName),     # 默认 llm_max_tokens
   }

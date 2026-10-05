@@ -2,7 +2,9 @@ package persona
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -67,11 +69,12 @@ func TestOpenAIClientVisionContent(t *testing.T) {
 	defer srv.Close()
 
 	c := testClient(t, srv.URL, 0, 2*time.Second, nil)
+	wantURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("\x89PNG"))
 	req := completionRequest{
 		System: "s",
 		User: contentParts{
 			{Type: "text", Text: "T"},
-			{Type: "image_url", ImageURL: &imageURLPart{URL: "http://x/a.jpg"}},
+			{Type: "image_url", ImageURL: &imageURLPart{URL: wantURL}},
 		},
 		Temperature: 0.5,
 		MaxTokens:   10,
@@ -101,8 +104,45 @@ func TestOpenAIClientVisionContent(t *testing.T) {
 		t.Fatalf("第二块类型 = %#v", p1["type"])
 	}
 	img, _ := p1["image_url"].(map[string]any)
-	if img["url"] != "http://x/a.jpg" {
-		t.Fatalf("image_url.url = %#v", p1["image_url"])
+	if img["url"] != wantURL {
+		t.Fatalf("image_url.url = %#v, want %q", p1["image_url"], wantURL)
+	}
+}
+
+// TestOpenAIClientDebugRedactsDataURL 锁定 debug 日志把 data URL 折成 <N bytes>，
+// 线上请求体不折叠。
+func TestOpenAIClientDebugRedactsDataURL(t *testing.T) {
+	var wire []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wire, _ = io.ReadAll(r.Body)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{"content": "ok"}}},
+		})
+	}))
+	defer srv.Close()
+
+	c, cap := debugClient(t, srv.URL, true)
+	req := completionRequest{
+		System: "s",
+		User: contentParts{
+			{Type: "text", Text: "T"},
+			{Type: "image_url", ImageURL: &imageURLPart{URL: dataURL("image/png", []byte("abcdefgh"))}},
+		},
+		Temperature: 0.5,
+		MaxTokens:   10,
+	}
+	if _, err := c.Complete(context.Background(), req); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if !strings.Contains(string(wire), "YWJjZGVmZ2g=") {
+		t.Fatalf("线上请求体应含完整 base64: %s", wire)
+	}
+	body := cap.attrOf("persona llm 请求", "body")
+	if !strings.Contains(body, "data:image/png;base64,8 bytes") {
+		t.Fatalf("请求日志应折叠为 <N bytes>: %q", body)
+	}
+	if strings.Contains(body, "YWJjZGVmZ2g=") {
+		t.Fatalf("请求日志不应含完整 base64: %q", body)
 	}
 }
 

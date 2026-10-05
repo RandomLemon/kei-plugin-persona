@@ -169,13 +169,16 @@ func extractImageURLs(msg *bot.Message) []string {
 	return out
 }
 
-// renderUserContent 渲染 user 的 content 数组：text 块 + 可选 image_url 块。
-func (p *Plugin) renderUserContent(kind bot.MessageKind, history []Turn) contentParts {
-	trimmed := p.trimHistory(history)
-	parts := contentParts{{Type: "text", Text: p.renderHistoryText(kind, trimmed)}}
+// selectVisionURLs 选出要作为多模态输入下载的图片 URL。
+//
+// 关闭视觉（llm_vision_enabled=false 或 llm_vision_max_images<=0）时返回 nil；
+// 否则基于与文本块同一裁剪结果，按时间序每条消息最多 visionMaxImagesPerTurn 张，
+// 再取最后至多 llm_vision_max_images 张。
+func (p *Plugin) selectVisionURLs(history []Turn) []string {
 	if !p.cfg.llmVisionEnabled || p.cfg.llmVisionMaxImages <= 0 {
-		return parts
+		return nil
 	}
+	trimmed := p.trimHistory(history)
 	urls := make([]string, 0, p.cfg.llmVisionMaxImages)
 	for _, t := range trimmed { // 时间序，每条最多 visionMaxImagesPerTurn 张
 		for i, u := range t.ImageURLs {
@@ -188,7 +191,15 @@ func (p *Plugin) renderUserContent(kind bot.MessageKind, history []Turn) content
 	if len(urls) > p.cfg.llmVisionMaxImages {
 		urls = urls[len(urls)-p.cfg.llmVisionMaxImages:] // 取最后 N 张
 	}
-	for _, u := range urls {
+	return urls
+}
+
+// renderUserContent 渲染 user 的 content 数组：text 块 + 每个 images 项一个 image_url 块。
+// images 是已下载并编码好的 data URL（见 vision.go），本函数不做 I/O。
+func (p *Plugin) renderUserContent(kind bot.MessageKind, history []Turn, images []string) contentParts {
+	trimmed := p.trimHistory(history)
+	parts := contentParts{{Type: "text", Text: p.renderHistoryText(kind, trimmed)}}
+	for _, u := range images {
 		parts = append(parts, contentPart{Type: "image_url", ImageURL: &imageURLPart{URL: u}})
 	}
 	return parts

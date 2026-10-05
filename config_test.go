@@ -54,6 +54,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 		{"debug_prompts", cfg.debugPrompts, false},
 		{"llm_vision_enabled", cfg.llmVisionEnabled, false},
 		{"llm_vision_max_images", cfg.llmVisionMaxImages, 4},
+		{"llm_vision_max_image_bytes", cfg.llmVisionMaxImageBytes, 4194304},
 	}
 	for _, c := range checks {
 		if c.got != c.want {
@@ -138,6 +139,8 @@ func TestLoadConfigErrors(t *testing.T) {
 			"persona: 配置错误 private_policy=on: 必须是 off|open|whitelist|blacklist 之一"},
 		{"llm_vision_max_images 为负", func(c map[string]any) { c["llm_vision_max_images"] = -1 },
 			"persona: 配置错误 llm_vision_max_images=-1: 必须 >= 0"},
+		{"llm_vision_max_image_bytes 为零", func(c map[string]any) { c["llm_vision_max_image_bytes"] = 0 },
+			"persona: 配置错误 llm_vision_max_image_bytes=0: 必须 >= 1"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

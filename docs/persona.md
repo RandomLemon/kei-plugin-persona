@@ -181,7 +181,7 @@ type Turn struct {
   2. 拼接前对每个 `SegAt` 前置 `@<name 或 user_id> `（`Data[bot.KeyUserName]` 为空时用 `Data[bot.KeyUserID]`）；
   3. `SegReply` 渲染为 `[引用]` 前缀；
   4. 文本为空时按首个非文本段回落：`[图片]`/`[表情]`/`[文件]`/`[卡片]`/`[引用]`/`[消息]`。
-- **`extractImageURLs(*bot.Message)`**：抽取图片段中可用的 URL（`Data[bot.KeyURL]` 非空即取；否则仅当 `Data[bot.KeyFile]` 以 `http://`/`https://` 开头才取），填进 `Turn.ImageURLs`，**仅供多模态注入用**（见 [`llm.md`](llm.md) §9.1）；文本渲染仍按上面的回落规则输出 `[图片]`，与 `llm_vision_enabled` 无关。自己发送的 `Turn` 不带 `ImageURLs`。
+- **`extractImageURLs(*bot.Message)`**：抽取图片段中可用的 URL（`Data[bot.KeyURL]` 非空即取；否则仅当 `Data[bot.KeyFile]` 以 `http://`/`https://` 开头才取），填进 `Turn.ImageURLs`，**仅供多模态注入用**（见 [`llm.md`](llm.md) §9.1）；文本渲染仍按上面的回落规则输出 `[图片]`，与 `llm_vision_enabled` 无关。该函数只做纯 URL 抽取；下载与 base64 编码在 `vision.go`（见 [`architecture.md`](architecture.md) §5），失败时该图静默丢弃。自己发送的 `Turn` 不带 `ImageURLs`。
 - **最终 user 消息内容** = 头 + 每行一条（按时间序，含最新一条）+ 尾部空行。头按会话类型渲染：群聊 `[群聊记录]`、私聊 `[私聊记录]`。
 - **裁剪**：超过 `context_max_messages` 条、或超过 `llm_history_max_chars` 字符（按 **rune** 计）时从最旧丢弃，**始终保留最新一条**。
 - `Turn.At` 取 `ev.Time`，为零值时取 `p.now()`。

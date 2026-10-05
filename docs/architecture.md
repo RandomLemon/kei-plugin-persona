@@ -254,6 +254,7 @@ kei-plugin-persona/
 ├── decision.go      接话决策：过滤、寻址判定、随机参与、批处理定时器
 ├── state.go         每会话状态、历史环、计数器、Storage 读写
 ├── llm.go           OpenAI 兼容客户端（请求/响应/重试/超时）
+├── vision.go        图片下载与 base64 内联（地址限制、体积上限、失败丢弃）
 ├── commands.go      /persona 管理命令
 ├── policy.go        插件级名单策略：模式判定、/persona policy|list 渲染、persona:policy 读写
 ├── config_test.go   配置解析与校验单测
@@ -278,6 +279,7 @@ kei-plugin-persona/
 | `decision.go` | 群聊/私聊消息过滤、名单放行判定、寻址判定、随机参与判定、批处理定时器（`handleChat`/`schedule`/`onBatch`/`generate`）。 |
 | `state.go` | `channelState`、历史环、计数器、LRU、Storage 懒加载/写穿透。 |
 | `llm.go` | `completer` 接口与 `openaiClient` 实现（请求构造、响应解析、超时重试）。 |
+| `vision.go` | 图片下载与 base64 data URL 编码：地址限制拨号器、体积上限、失败丢弃、debug 日志折叠。 |
 | `commands.go` | `/persona status|persona|on|off|reset|policy|list` 子命令实现。 |
 | `policy.go` | 插件级名单策略：`policyState`/`policyValue`、四值模式放行判定、`persona:policy` 读写、`/persona policy|list` 报告渲染。 |
 | `*_test.go` | 按文件名的领域单测；`e2e_test.go` 走 mock 适配器端到端。 |

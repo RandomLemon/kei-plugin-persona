@@ -1,9 +1,12 @@
 package persona
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -828,16 +831,15 @@ func TestPrivatePeersHaveDistinctKeys(t *testing.T) {
 
 // TestVisionDecisionRequestShape 走完整链路，断言发往 LLM 的请求体形状。
 func TestVisionDecisionRequestShape(t *testing.T) {
-	imageEvent := func(channel, user, name string) *bot.Event {
-		ev := atEvent(channel, user, name, "看这张图")
-		ev.Message.Segments = append(ev.Message.Segments,
-			bot.Segment{Type: bot.SegImage, Data: map[string]any{bot.KeyURL: "http://x/a.jpg"}})
-		return ev
-	}
-	run := func(t *testing.T, enabled bool) map[string]any {
-		t.Helper()
-		got := make(chan map[string]any, 1)
-		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	pngBytes := append([]byte("\x89PNG\r\n\x1a\n"), []byte("payload-bytes")...)
+	imgSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(pngBytes)
+	}))
+	defer imgSrv.Close()
+
+	llmStub := func(got chan map[string]any) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			select {
@@ -845,41 +847,57 @@ func TestVisionDecisionRequestShape(t *testing.T) {
 			default:
 			}
 			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"看到了"}}]}`))
-		})
-		env := newTestEnv(t, handler, func(c map[string]any) {
+		}
+	}
+	imageEvent := func(user, name string) *bot.Event {
+		ev := atEvent("g1", user, name, "看这张图")
+		ev.Message.Segments = append(ev.Message.Segments,
+			bot.Segment{Type: bot.SegImage, Data: map[string]any{bot.KeyURL: imgSrv.URL + "/a.png"}})
+		return ev
+	}
+	run := func(t *testing.T, enabled bool, replaceClient bool) (map[string]any, *testEnv) {
+		t.Helper()
+		got := make(chan map[string]any, 1)
+		env := newTestEnv(t, llmStub(got), func(c map[string]any) {
 			fastConfig(c)
 			c["llm_vision_enabled"] = enabled
+			c["llm_vision_max_images"] = 4
 		})
-		env.waitLoaded(imageEvent("g1", "u1", "张三"))
-		_ = env.deliver(imageEvent("g1", "u1", "张三"))
+		if replaceClient {
+			env.p.imgClient = imgSrv.Client() // 绕过地址限制：httptest 监听回环
+		}
+		env.waitLoaded(imageEvent("u1", "张三"))
+		_ = env.deliver(imageEvent("u1", "张三"))
 		if !env.waitSends(1, 2*time.Second) {
 			t.Fatal("应触发一次回复")
 		}
 		select {
 		case body := <-got:
-			return body
+			return body, env
 		case <-time.After(time.Second):
 			t.Fatal("未捕获请求体")
-			return nil
+			return nil, env
 		}
 	}
-
-	userContent := func(t *testing.T, body map[string]any) any {
+	userContent := func(t *testing.T, body map[string]any) []any {
 		t.Helper()
 		msgs, ok := body["messages"].([]any)
 		if !ok || len(msgs) != 2 {
 			t.Fatalf("messages = %#v", body["messages"])
 		}
 		user, _ := msgs[1].(map[string]any)
-		return user["content"]
+		parts, ok := user["content"].([]any)
+		if !ok {
+			t.Fatalf("content 应为数组, got %#v", user["content"])
+		}
+		return parts
 	}
 
 	t.Run("关闭态为仅含 text 块的数组且不含 image_url", func(t *testing.T) {
-		body := run(t, false)
-		content := userContent(t, body)
-		parts, ok := content.([]any)
-		if !ok || len(parts) != 1 {
-			t.Fatalf("关闭态 content 应为长度 1 的数组, got %#v", content)
+		body, _ := run(t, false, true)
+		parts := userContent(t, body)
+		if len(parts) != 1 {
+			t.Fatalf("关闭态 content 应为长度 1 的数组, got %#v", parts)
 		}
 		p0, _ := parts[0].(map[string]any)
 		if p0["type"] != "text" {
@@ -893,20 +911,45 @@ func TestVisionDecisionRequestShape(t *testing.T) {
 		}
 	})
 
-	t.Run("开启态含 image_url 块", func(t *testing.T) {
-		body := run(t, true)
-		content := userContent(t, body)
-		parts, ok := content.([]any)
-		if !ok || len(parts) != 2 {
-			t.Fatalf("开启态 content 应为长度 2 的数组, got %#v", content)
+	t.Run("开启态内联 base64", func(t *testing.T) {
+		body, _ := run(t, true, true)
+		parts := userContent(t, body)
+		if len(parts) != 2 {
+			t.Fatalf("开启态 content 应为长度 2 的数组, got %#v", parts)
 		}
 		p1, _ := parts[1].(map[string]any)
 		if p1["type"] != "image_url" {
 			t.Fatalf("第二块 = %#v", p1)
 		}
 		img, _ := p1["image_url"].(map[string]any)
-		if img["url"] != "http://x/a.jpg" {
-			t.Fatalf("image_url.url = %#v", p1["image_url"])
+		urlStr, _ := img["url"].(string)
+		const prefix = "data:image/png;base64,"
+		if !strings.HasPrefix(urlStr, prefix) {
+			t.Fatalf("image_url.url = %q, want 前缀 %q", urlStr, prefix)
+		}
+		raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(urlStr, prefix))
+		if err != nil {
+			t.Fatalf("base64 解码失败: %v", err)
+		}
+		if !bytes.Equal(raw, pngBytes) {
+			t.Fatalf("解码字节 = %q, want %q", raw, pngBytes)
+		}
+		if strings.Contains(urlStr, imgSrv.URL) {
+			t.Fatalf("请求体不应含原始网址 %q: %q", imgSrv.URL, urlStr)
+		}
+	})
+
+	t.Run("地址限制生效", func(t *testing.T) {
+		body, env := run(t, true, false)
+		parts := userContent(t, body)
+		if len(parts) != 1 {
+			t.Fatalf("回环图片应被丢弃, got %#v", parts)
+		}
+		if p0, _ := parts[0].(map[string]any); p0["type"] != "text" {
+			t.Fatalf("首个块 = %#v", parts[0])
+		}
+		if !env.cap.hasMsg("persona 图片跳过") {
+			t.Fatal("应记录 persona 图片跳过")
 		}
 	})
 }
