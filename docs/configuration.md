@@ -50,6 +50,8 @@
 | `reply_dedupe` | bool | `true` | 与最近 3 条自己的发言重复则不发 |
 | `limits_max_concurrent` | int | `2` | 全局并发 LLM 调用上限 |
 | `debug_prompts` | bool | `false` | 是否 Debug 输出发往 LLM 的请求与响应 |
+| `llm_vision_enabled` | bool | `false` | 是否把入站图片作为多模态输入发给 LLM（需视觉模型） |
+| `llm_vision_max_images` | int | `4` | 单次请求最多附加的图片数；`0` 表示不附加 |
 
 `plugins.persona.enabled` 由 kei 读取（布尔或标量简写），不进入插件配置，也不在上表内。
 
@@ -139,6 +141,8 @@ plugins:
     llm_skip_token: "[SKIP]"
     llm_history_max_chars: 4000
     llm_extra_headers: {}
+    llm_vision_enabled: false     # 开启后需配视觉模型（如 gpt-4o-mini）
+    llm_vision_max_images: 4
 
     # ---- 回复 ----
     reply_max_chars: 200
@@ -265,6 +269,8 @@ persona: 配置错误 group_policy=all: 必须是 off|open|whitelist|blacklist �
 | `reply_dedupe` | 无额外校验 |
 | `limits_max_concurrent` | 必须 >= 1 |
 | `debug_prompts` | 无额外校验 |
+| `llm_vision_enabled` | 无额外校验 |
+| `llm_vision_max_images` | 必须 >= 0 |
 
 **注（列表键的取值口径）**：`self_ids`、`trigger_keywords`、`group_list`、`private_list` 是四个 `[]string` 键，由 `readStringList` 读取。四者都兼容 YAML 的常见写法：`["123"]`（带引号）、`[123]`（裸数字）、`123`（裸标量）、`"123,456"`（逗号分隔）。元素一律按 YAML 语义转成字符串后使用，不做 `x.(string)` 类型断言丢弃。
 

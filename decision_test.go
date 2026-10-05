@@ -825,3 +825,88 @@ func TestPrivatePeersHaveDistinctKeys(t *testing.T) {
 		t.Fatalf("状态类型错误: kind=%q peer=%q", st1.kind, st1.peerUserID)
 	}
 }
+
+// TestVisionDecisionRequestShape 走完整链路，断言发往 LLM 的请求体形状。
+func TestVisionDecisionRequestShape(t *testing.T) {
+	imageEvent := func(channel, user, name string) *bot.Event {
+		ev := atEvent(channel, user, name, "看这张图")
+		ev.Message.Segments = append(ev.Message.Segments,
+			bot.Segment{Type: bot.SegImage, Data: map[string]any{bot.KeyURL: "http://x/a.jpg"}})
+		return ev
+	}
+	run := func(t *testing.T, enabled bool) map[string]any {
+		t.Helper()
+		got := make(chan map[string]any, 1)
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			select {
+			case got <- body:
+			default:
+			}
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"看到了"}}]}`))
+		})
+		env := newTestEnv(t, handler, func(c map[string]any) {
+			fastConfig(c)
+			c["llm_vision_enabled"] = enabled
+		})
+		env.waitLoaded(imageEvent("g1", "u1", "张三"))
+		_ = env.deliver(imageEvent("g1", "u1", "张三"))
+		if !env.waitSends(1, 2*time.Second) {
+			t.Fatal("应触发一次回复")
+		}
+		select {
+		case body := <-got:
+			return body
+		case <-time.After(time.Second):
+			t.Fatal("未捕获请求体")
+			return nil
+		}
+	}
+
+	userContent := func(t *testing.T, body map[string]any) any {
+		t.Helper()
+		msgs, ok := body["messages"].([]any)
+		if !ok || len(msgs) != 2 {
+			t.Fatalf("messages = %#v", body["messages"])
+		}
+		user, _ := msgs[1].(map[string]any)
+		return user["content"]
+	}
+
+	t.Run("关闭态为仅含 text 块的数组且不含 image_url", func(t *testing.T) {
+		body := run(t, false)
+		content := userContent(t, body)
+		parts, ok := content.([]any)
+		if !ok || len(parts) != 1 {
+			t.Fatalf("关闭态 content 应为长度 1 的数组, got %#v", content)
+		}
+		p0, _ := parts[0].(map[string]any)
+		if p0["type"] != "text" {
+			t.Fatalf("首个块 = %#v", p0)
+		}
+		if s, _ := p0["text"].(string); !strings.Contains(s, "看这张图") {
+			t.Fatalf("text 块 = %#v", p0["text"])
+		}
+		if raw, ok := p0["image_url"]; ok {
+			t.Fatalf("关闭态不应有 image_url: %#v", raw)
+		}
+	})
+
+	t.Run("开启态含 image_url 块", func(t *testing.T) {
+		body := run(t, true)
+		content := userContent(t, body)
+		parts, ok := content.([]any)
+		if !ok || len(parts) != 2 {
+			t.Fatalf("开启态 content 应为长度 2 的数组, got %#v", content)
+		}
+		p1, _ := parts[1].(map[string]any)
+		if p1["type"] != "image_url" {
+			t.Fatalf("第二块 = %#v", p1)
+		}
+		img, _ := p1["image_url"].(map[string]any)
+		if img["url"] != "http://x/a.jpg" {
+			t.Fatalf("image_url.url = %#v", p1["image_url"])
+		}
+	})
+}

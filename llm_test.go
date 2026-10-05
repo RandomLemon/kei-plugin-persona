@@ -42,7 +42,7 @@ func TestOpenAIClientSuccess(t *testing.T) {
 
 	// 故意带尾部斜杠，验证 TrimRight。
 	c := testClient(t, srv.URL+"/v1/", 0, 2*time.Second, nil)
-	got, err := c.Complete(context.Background(), completionRequest{System: "s", User: "u", Temperature: 0.5, MaxTokens: 10})
+	got, err := c.Complete(context.Background(), completionRequest{System: "s", User: textParts("u"), Temperature: 0.5, MaxTokens: 10})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
@@ -51,6 +51,58 @@ func TestOpenAIClientSuccess(t *testing.T) {
 	}
 	if gotModel != "m" || gotAuth != "Bearer k" {
 		t.Fatalf("model=%q auth=%q", gotModel, gotAuth)
+	}
+}
+
+func TestOpenAIClientVisionContent(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{"content": "ok"}}},
+		})
+	}))
+	defer srv.Close()
+
+	c := testClient(t, srv.URL, 0, 2*time.Second, nil)
+	req := completionRequest{
+		System: "s",
+		User: contentParts{
+			{Type: "text", Text: "T"},
+			{Type: "image_url", ImageURL: &imageURLPart{URL: "http://x/a.jpg"}},
+		},
+		Temperature: 0.5,
+		MaxTokens:   10,
+	}
+	if _, err := c.Complete(context.Background(), req); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	msgs, ok := got["messages"].([]any)
+	if !ok || len(msgs) != 2 {
+		t.Fatalf("messages = %#v", got["messages"])
+	}
+	sys, _ := msgs[0].(map[string]any)
+	if sys["content"] != "s" {
+		t.Fatalf("system content 应为字符串, got %#v", sys["content"])
+	}
+	user, _ := msgs[1].(map[string]any)
+	parts, ok := user["content"].([]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("user content 应为长度 2 的数组, got %#v", user["content"])
+	}
+	p0, _ := parts[0].(map[string]any)
+	p1, _ := parts[1].(map[string]any)
+	if p0["type"] != "text" || p0["text"] != "T" {
+		t.Fatalf("text 块 = %#v", p0)
+	}
+	if p1["type"] != "image_url" {
+		t.Fatalf("第二块类型 = %#v", p1["type"])
+	}
+	img, _ := p1["image_url"].(map[string]any)
+	if img["url"] != "http://x/a.jpg" {
+		t.Fatalf("image_url.url = %#v", p1["image_url"])
 	}
 }
 
@@ -209,7 +261,7 @@ func TestOpenAIClientDebugLogsRequestAndResponse(t *testing.T) {
 	defer srv.Close()
 
 	c, cap := debugClient(t, srv.URL, true)
-	got, err := c.Complete(context.Background(), completionRequest{System: "s", User: "u", Temperature: 0.5, MaxTokens: 10})
+	got, err := c.Complete(context.Background(), completionRequest{System: "s", User: textParts("u"), Temperature: 0.5, MaxTokens: 10})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
@@ -217,7 +269,7 @@ func TestOpenAIClientDebugLogsRequestAndResponse(t *testing.T) {
 		t.Fatalf("content = %q", got)
 	}
 	reqBody := cap.attrOf("persona llm 请求", "body")
-	if !strings.Contains(reqBody, `"content":"u"`) || !strings.Contains(reqBody, `"max_tokens":10`) {
+	if !strings.Contains(reqBody, `"content":[{"type":"text","text":"u"}]`) || !strings.Contains(reqBody, `"max_tokens":10`) {
 		t.Fatalf("请求日志缺少请求体: %q", reqBody)
 	}
 	respBody := cap.attrOf("persona llm 响应", "body")

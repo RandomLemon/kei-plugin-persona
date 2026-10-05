@@ -52,6 +52,8 @@ func TestLoadConfigDefaults(t *testing.T) {
 		{"reply_dedupe", cfg.replyDedupe, true},
 		{"limits_max_concurrent", cfg.limitsMaxConcurrent, 2},
 		{"debug_prompts", cfg.debugPrompts, false},
+		{"llm_vision_enabled", cfg.llmVisionEnabled, false},
+		{"llm_vision_max_images", cfg.llmVisionMaxImages, 4},
 	}
 	for _, c := range checks {
 		if c.got != c.want {
@@ -134,6 +136,8 @@ func TestLoadConfigErrors(t *testing.T) {
 			"persona: 配置错误 group_policy=all: 必须是 off|open|whitelist|blacklist 之一"},
 		{"private_policy 非法", func(c map[string]any) { c["private_policy"] = "on" },
 			"persona: 配置错误 private_policy=on: 必须是 off|open|whitelist|blacklist 之一"},
+		{"llm_vision_max_images 为负", func(c map[string]any) { c["llm_vision_max_images"] = -1 },
+			"persona: 配置错误 llm_vision_max_images=-1: 必须 >= 0"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

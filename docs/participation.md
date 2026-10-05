@@ -208,7 +208,7 @@ generate(st, epoch, history):
 
   req = completionRequest{
     System:      renderSystemPrompt(personaName, st, history),
-    User:        renderHistoryBlock(history),
+    User:        renderUserContent(st.kind, history),   # content 数组：text 块 + 可选 image_url
     Temperature: personaTemperature(personaName),   # 默认 llm_temperature
     MaxTokens:   personaMaxTokens(personaName),     # 默认 llm_max_tokens
   }

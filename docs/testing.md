@@ -91,6 +91,9 @@ go test -race ./...
 | `llm.go` 非法 JSON | 返回错误 |
 | `llm.go` 缺 choices | 返回错误 |
 | `llm.go` 超时（`llm_timeout` 极短） | 返回错误，`reason=llm_error` |
+| 多模态开关关闭（`llm_vision_enabled=false`） | 请求体 `messages[1].content` 为只含一个 `text` 块的数组，不含 `image_url`；文本与该历史下的 `renderHistoryBlock` 逐字相同 |
+| 多模态开关开启（`llm_vision_enabled=true`） | 请求体 `messages[1].content` 为数组，末元素为 `{"type":"image_url","image_url":{"url":...}}`；每条消息最多 1 张、总数受 `llm_vision_max_images` 限制、被文本裁剪丢掉的条目里的图片不发 |
+| `llm_vision_max_images` 校验 | `-1` → `persona: 配置错误 llm_vision_max_images=-1: 必须 >= 0`；默认 `4`、`llm_vision_enabled` 默认 `false`；`0` 时不附加图片块 |
 
 reason 词表（24 个）单测覆盖：`not_group`、`not_private`、`no_sender`、`not_allowed`、`bot_sender`、`command`、`empty_text`、`too_short`、`channel_off`、`loading`、`not_addressed`、`min_participants`、`cooldown`、`hour_quota`、`quiet_hours`、`inflight`、`probability`、`semaphore_full`、`skipped_by_llm`、`empty_reply`、`duplicate_reply`、`llm_error`、`send_error`、`stale`。
 

@@ -81,6 +81,124 @@ func TestRenderHistoryBlockTrimsOldest(t *testing.T) {
 	}
 }
 
+// TestExtractImageURLs 覆盖图片 URL 的可用性判定：KeyURL 优先，KeyFile 仅 http(s)。
+func TestExtractImageURLs(t *testing.T) {
+	seg := func(data map[string]any) bot.Segment { return bot.Segment{Type: bot.SegImage, Data: data} }
+	cases := []struct {
+		name string
+		msg  *bot.Message
+		want []string
+	}{
+		{"nil 消息", nil, nil},
+		{"无图片段", &bot.Message{Segments: []bot.Segment{{Type: bot.SegText, Data: map[string]any{bot.KeyText: "hi"}}}}, nil},
+		{"KeyURL 命中", &bot.Message{Segments: []bot.Segment{seg(map[string]any{bot.KeyURL: "http://x/a.jpg"})}},
+			[]string{"http://x/a.jpg"}},
+		{"KeyFile 为 http URL 命中", &bot.Message{Segments: []bot.Segment{seg(map[string]any{bot.KeyFile: "https://x/b.png"})}},
+			[]string{"https://x/b.png"}},
+		{"KeyFile 为本地路径丢弃", &bot.Message{Segments: []bot.Segment{seg(map[string]any{bot.KeyFile: "/tmp/x.png"})}}, nil},
+		{"KeyFile 为平台文件 ID 丢弃", &bot.Message{Segments: []bot.Segment{seg(map[string]any{bot.KeyFile: "file_abc"})}}, nil},
+		{"KeyURL 优先于 KeyFile", &bot.Message{Segments: []bot.Segment{
+			seg(map[string]any{bot.KeyURL: "http://x/a.jpg", bot.KeyFile: "/tmp/b.png"}),
+		}}, []string{"http://x/a.jpg"}},
+		{"多图按序", &bot.Message{Segments: []bot.Segment{
+			seg(map[string]any{bot.KeyURL: "http://x/1.jpg"}),
+			{Type: bot.SegImage, Data: map[string]any{}},
+			seg(map[string]any{bot.KeyURL: "http://x/2.jpg"}),
+		}}, []string{"http://x/1.jpg", "http://x/2.jpg"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractImageURLs(tc.msg)
+			if len(got) != len(tc.want) {
+				t.Fatalf("extractImageURLs = %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("extractImageURLs[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestRenderUserContentVisionOff 锁定关闭态：单个 text 块，内容与 renderHistoryBlock 逐字相同。
+func TestRenderUserContentVisionOff(t *testing.T) {
+	env := newTestEnv(t, nil, nil)
+	history := []Turn{
+		{Name: "张三", Text: "今晚谁去打球", ImageURLs: []string{"http://x/1.jpg"}},
+		{Name: "李四", Text: "我可能不行"},
+	}
+	parts := env.p.renderUserContent(bot.MessageGroup, history)
+	if len(parts) != 1 || parts[0].Type != "text" {
+		t.Fatalf("关闭态应只有 text 块: %#v", parts)
+	}
+	if parts[0].Text != env.p.renderHistoryBlock(bot.MessageGroup, history) {
+		t.Fatalf("text 块应与 renderHistoryBlock 逐字相同: %q", parts[0].Text)
+	}
+	if parts[0].ImageURL != nil {
+		t.Fatal("text 块不应带 image_url")
+	}
+}
+
+// TestRenderUserContentVisionOn 锁定开关态：text 块 + 按时间序的最后 N 张图。
+func TestRenderUserContentVisionOn(t *testing.T) {
+	env := newTestEnv(t, nil, func(c map[string]any) {
+		c["llm_vision_enabled"] = true
+		c["llm_vision_max_images"] = 2
+	})
+	history := []Turn{
+		{Name: "张三", Text: "a", ImageURLs: []string{"http://x/1.jpg", "http://x/1b.jpg"}},
+		{Name: "李四", Text: "b", ImageURLs: []string{"http://x/2.jpg"}},
+		{Name: "王五", Text: "c", ImageURLs: []string{"http://x/3.jpg"}},
+	}
+	parts := env.p.renderUserContent(bot.MessageGroup, history)
+	if len(parts) != 3 {
+		t.Fatalf("应为 text + 2 张图: %#v", parts)
+	}
+	if parts[0].Type != "text" || parts[0].Text != "[群聊记录]\n张三: a\n李四: b\n王五: c\n\n" {
+		t.Fatalf("text 块 = %#v", parts[0])
+	}
+	// 每条消息最多 1 张（visionMaxImagesPerTurn），故候选为 1.jpg/2.jpg/3.jpg，取最后 2 张。
+	want := []string{"http://x/2.jpg", "http://x/3.jpg"}
+	for i, w := range want {
+		p := parts[i+1]
+		if p.Type != "image_url" || p.ImageURL == nil || p.ImageURL.URL != w {
+			t.Fatalf("图片块[%d] = %#v, want %q", i, p, w)
+		}
+	}
+}
+
+// TestRenderUserContentVisionZero 锁定 llm_vision_max_images=0 等价于不附加。
+func TestRenderUserContentVisionZero(t *testing.T) {
+	env := newTestEnv(t, nil, func(c map[string]any) {
+		c["llm_vision_enabled"] = true
+		c["llm_vision_max_images"] = 0
+	})
+	history := []Turn{{Name: "张三", Text: "a", ImageURLs: []string{"http://x/1.jpg"}}}
+	if parts := env.p.renderUserContent(bot.MessageGroup, history); len(parts) != 1 {
+		t.Fatalf("上限 0 时不应附加图片: %#v", parts)
+	}
+}
+
+// TestRenderUserContentVisionTrimmed 锁定图片取自与文本块同一裁剪结果。
+func TestRenderUserContentVisionTrimmed(t *testing.T) {
+	env := newTestEnv(t, nil, func(c map[string]any) {
+		c["llm_vision_enabled"] = true
+		c["llm_history_max_chars"] = 3
+	})
+	history := []Turn{
+		{Name: "甲", Text: "aaa", ImageURLs: []string{"http://x/old.jpg"}},
+		{Name: "乙", Text: "bbb", ImageURLs: []string{"http://x/new.jpg"}},
+	}
+	parts := env.p.renderUserContent(bot.MessageGroup, history)
+	if parts[0].Text != "[群聊记录]\n乙: bbb\n\n" {
+		t.Fatalf("text 块 = %q", parts[0].Text)
+	}
+	if len(parts) != 2 || parts[1].ImageURL.URL != "http://x/new.jpg" {
+		t.Fatalf("被裁掉的条目里的图片不应发送: %#v", parts)
+	}
+}
+
 func TestRenderSystemPrompt(t *testing.T) {
 	env := newTestEnv(t, nil, func(c map[string]any) { c["random_timezone"] = "UTC" })
 	ev := groupEvent("g1", "u1", "张三", "hi")

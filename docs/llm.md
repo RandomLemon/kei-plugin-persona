@@ -13,12 +13,15 @@
 ```json
 {"model":"<llm_model>","temperature":0.8,"max_tokens":200,
  "messages":[{"role":"system","content":"<系统提示词>"},
-             {"role":"user","content":"[群聊记录]\n..."}]}
+             {"role":"user","content":[{"type":"text","text":"[群聊记录]\n..."},
+                                       {"type":"image_url","image_url":{"url":"https://.../a.jpg"}}]}]}
 ```
 
 - `temperature`/`max_tokens` 取**当前人格**的覆盖值，缺失则回落全局键 `llm_temperature`/`llm_max_tokens`。
-- `system` 的 `content` 是 `persona_template` 渲染结果，包含 11 个占位符（`{{persona}}`、`{{persona_name}}`、`{{chat_kind}}`、`{{channel_name}}`、`{{channel_id}}`、`{{platform}}`、`{{bot_name}}`、`{{now}}`、`{{last_sender}}`、`{{max_chars}}`、`{{skip_token}}`），模板全文与取值见 [`persona.md`](persona.md) §8.5（本文不重复）。
-- `user` 的 `content` 是历史渲染块，见 [`persona.md`](persona.md) §8.6。
+- `system` 的 `content` 恒为**字符串**，是 `persona_template` 渲染结果，包含 11 个占位符（`{{persona}}`、`{{persona_name}}`、`{{chat_kind}}`、`{{channel_name}}`、`{{channel_id}}`、`{{platform}}`、`{{bot_name}}`、`{{now}}`、`{{last_sender}}`、`{{max_chars}}`、`{{skip_token}}`），模板全文与取值见 [`persona.md`](persona.md) §8.5（本文不重复）。
+- `user` 的 `content` 恒为**数组**：无图片时为单个 `text` 块（内容即历史渲染块，见 [`persona.md`](persona.md) §8.6）；`llm_vision_enabled=true` 时追加最多 `llm_vision_max_images` 个 `{"type":"image_url","image_url":{"url":"..."}}` 块。顺序固定：历史渲染块在前，图片在后。
+
+图片块的来源与上限：只有 `SegImage` 的 `KeyURL` 参与；`KeyFile` 仅在取值为 `http(s)://` 开头时参与（本地路径/平台文件 ID 对远端 LLM 不可用，丢弃）。参与选取的是与文本块**同一裁剪结果**的历史（被 `llm_history_max_chars` 裁掉的最旧条目里的图片也不发），每条消息最多 1 张，按时间序取最后至多 `llm_vision_max_images` 张（`0` 表示不附加）。图片块**不计入** `llm_history_max_chars`（该键只裁文本）。图片 URL 不持久化，进程重启即丢。
 
 **注入缝（逐字）**：
 
@@ -26,10 +29,25 @@
 // completionRequest 是一次补全请求；System/User 分别对应 system 与 user 消息。
 type completionRequest struct {
 	System      string
-	User        string
+	User        contentParts // user 消息的 content 数组（text + 可选 image_url）
 	Temperature float64
 	MaxTokens   int
 }
+
+// contentPart 是 OpenAI content 数组中的一个块：text 或 image_url。
+type contentPart struct {
+	Type     string        `json:"type"`
+	Text     string        `json:"text,omitempty"`
+	ImageURL *imageURLPart `json:"image_url,omitempty"`
+}
+
+// imageURLPart 是 image_url 块的内容。
+type imageURLPart struct {
+	URL string `json:"url"`
+}
+
+// contentParts 是 user 消息的 content（恒为数组）。
+type contentParts []contentPart
 
 // completer 屏蔽具体 LLM 服务，便于单测注入桩。
 type completer interface {
@@ -75,6 +93,7 @@ type openaiClient struct { // 实现 completer
 | `llm_max_tokens` | 限制**生成**长度 | `200` |
 | `context_max_messages` | 限制**输入历史条数** | `20` |
 | `llm_history_max_chars` | 限制**输入历史字符数**（rune） | `4000` |
+| `llm_vision_max_images` | 单次请求附加的图片数 | `4` |
 | `reply_max_chars` | 对 LLM 输出做**二次硬截断** | `200` |
 
 三者关系：输入长度由 `context_max_messages` + `llm_history_max_chars` 双重限制（超限从最旧丢弃、始终保留最新一条）；输出长度由 `llm_max_tokens` 限制，再由 `reply_max_chars` 兜底截断。默认值即推荐取值。

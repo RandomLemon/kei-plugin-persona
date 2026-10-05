@@ -133,6 +133,7 @@ func (p *Plugin) userTurn(ev *bot.Event, text string) Turn {
 		t.Name = ev.Sender.Name
 		t.IsBot = ev.Sender.IsBot
 	}
+	t.ImageURLs = extractImageURLs(ev.Message)
 	return t
 }
 
@@ -342,7 +343,7 @@ func (p *Plugin) generate(st *channelState, epoch uint64, history []Turn) {
 
 	req := completionRequest{
 		System:      p.renderSystemPrompt(personaName, st, history),
-		User:        p.renderHistoryBlock(chatKind, history),
+		User:        p.renderUserContent(chatKind, history),
 		Temperature: pf.Temperature,
 		MaxTokens:   pf.MaxTokens,
 	}

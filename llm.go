@@ -15,10 +15,28 @@ import (
 // completionRequest 是一次补全请求；System/User 分别对应 system 与 user 消息。
 type completionRequest struct {
 	System      string
-	User        string
+	User        contentParts // user 消息的 content 数组（text + 可选 image_url）
 	Temperature float64
 	MaxTokens   int
 }
+
+// contentPart 是 OpenAI content 数组中的一个块：text 或 image_url。
+type contentPart struct {
+	Type     string        `json:"type"`
+	Text     string        `json:"text,omitempty"`
+	ImageURL *imageURLPart `json:"image_url,omitempty"`
+}
+
+// imageURLPart 是 image_url 块的内容。
+type imageURLPart struct {
+	URL string `json:"url"`
+}
+
+// contentParts 是 user 消息的 content（恒为数组）。
+type contentParts []contentPart
+
+// textParts 构造只含一个 text 块的 content，供内部与测试使用。
+func textParts(s string) contentParts { return contentParts{{Type: "text", Text: s}} }
 
 // completer 屏蔽具体 LLM 服务，便于单测注入桩。
 type completer interface {
@@ -89,7 +107,7 @@ func (c *openaiClient) attempt(ctx context.Context, req completionRequest) (stri
 		"model":       c.model,
 		"temperature": req.Temperature,
 		"max_tokens":  req.MaxTokens,
-		"messages": []map[string]string{
+		"messages": []map[string]any{
 			{"role": "system", "content": req.System},
 			{"role": "user", "content": req.User},
 		},

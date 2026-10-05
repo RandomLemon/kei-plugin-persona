@@ -20,6 +20,8 @@ type Turn struct {
 	Text   string
 	Self   bool
 	IsBot  bool
+
+	ImageURLs []string // 本条消息的图片 URL（仅多模态注入用）
 }
 
 // channelState 是单个会话的状态。字段语义见 docs/architecture.md 第 4 章。

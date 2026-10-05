@@ -102,6 +102,8 @@ type config struct {
 	llmSkipToken       string
 	llmHistoryMaxChars int
 	llmExtraHeaders    map[string]string
+	llmVisionEnabled   bool
+	llmVisionMaxImages int
 
 	replyMaxChars      int
 	replyMentionSender bool
@@ -137,6 +139,10 @@ func loadConfig(c *bot.Config) (*config, error) {
 		return nil, err
 	}
 	if cfg.llmHistoryMaxChars, err = r.intKey("llm_history_max_chars", 4000, "必须 >= 1"); err != nil {
+		return nil, err
+	}
+	cfg.llmVisionEnabled = r.boolean("llm_vision_enabled", false)
+	if cfg.llmVisionMaxImages, err = r.intKey("llm_vision_max_images", 4, "必须 >= 0"); err != nil {
 		return nil, err
 	}
 
@@ -234,6 +240,9 @@ func loadConfig(c *bot.Config) (*config, error) {
 		return nil, err
 	}
 	if err := needMinInt("llm_history_max_chars", cfg.llmHistoryMaxChars, 1); err != nil {
+		return nil, err
+	}
+	if err := needMinInt("llm_vision_max_images", cfg.llmVisionMaxImages, 0); err != nil {
 		return nil, err
 	}
 	if err := needMinInt("reply_max_chars", cfg.replyMaxChars, 1); err != nil {

@@ -92,7 +92,15 @@ func (p *Plugin) renderSystemPrompt(personaName string, st *channelState, histor
 //
 // 超字符上限时从最旧丢弃，始终保留最新一条。
 func (p *Plugin) renderHistoryBlock(kind bot.MessageKind, history []Turn) string {
+	return p.renderHistoryText(kind, p.trimHistory(history))
+}
+
+// trimHistory 按 llm_history_max_chars 从最旧裁剪，始终保留最新一条。
+//
+// 计量口径与渲染逐字一致：每行 "<名>: <文本>" 的 rune 数 + 1（换行）。
+func (p *Plugin) trimHistory(history []Turn) []Turn {
 	lines := make([]string, 0, len(history))
+	trimmed := make([]Turn, 0, len(history))
 	for _, t := range history {
 		name := t.Name
 		if name == "" {
@@ -102,6 +110,7 @@ func (p *Plugin) renderHistoryBlock(kind bot.MessageKind, history []Turn) string
 			name = "未知"
 		}
 		lines = append(lines, name+": "+t.Text)
+		trimmed = append(trimmed, t)
 	}
 	total := 0
 	for _, l := range lines {
@@ -110,12 +119,79 @@ func (p *Plugin) renderHistoryBlock(kind bot.MessageKind, history []Turn) string
 	for len(lines) > 1 && total > p.cfg.llmHistoryMaxChars {
 		total -= utf8.RuneCountInString(lines[0]) + 1
 		lines = lines[1:]
+		trimmed = trimmed[1:]
+	}
+	return trimmed
+}
+
+// renderHistoryText 由已裁剪的历史渲染 user 文本块主体（头 + 行 + 尾部空行）。
+func (p *Plugin) renderHistoryText(kind bot.MessageKind, trimmed []Turn) string {
+	lines := make([]string, 0, len(trimmed))
+	for _, t := range trimmed {
+		name := t.Name
+		if name == "" {
+			name = t.UserID
+		}
+		if name == "" {
+			name = "未知"
+		}
+		lines = append(lines, name+": "+t.Text)
 	}
 	head := "[群聊记录]"
 	if kind == bot.MessagePrivate {
 		head = "[私聊记录]"
 	}
 	return head + "\n" + strings.Join(lines, "\n") + "\n\n"
+}
+
+// visionMaxImagesPerTurn 是单条入站消息最多参与多模态的图片数。
+const visionMaxImagesPerTurn = 1
+
+// extractImageURLs 抽取图片段的可用 URL：KeyURL 非空即用；
+// 否则仅当 KeyFile 是 http(s) URL 时使用（本地路径/平台文件 ID 对远端 LLM 不可用）。
+func extractImageURLs(msg *bot.Message) []string {
+	if msg == nil {
+		return nil
+	}
+	var out []string
+	for _, seg := range msg.Segments {
+		if seg.Type != bot.SegImage {
+			continue
+		}
+		if u := strOf(seg.Data[bot.KeyURL]); u != "" {
+			out = append(out, u)
+			continue
+		}
+		if u := strOf(seg.Data[bot.KeyFile]); strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
+			out = append(out, u)
+		}
+	}
+	return out
+}
+
+// renderUserContent 渲染 user 的 content 数组：text 块 + 可选 image_url 块。
+func (p *Plugin) renderUserContent(kind bot.MessageKind, history []Turn) contentParts {
+	trimmed := p.trimHistory(history)
+	parts := contentParts{{Type: "text", Text: p.renderHistoryText(kind, trimmed)}}
+	if !p.cfg.llmVisionEnabled || p.cfg.llmVisionMaxImages <= 0 {
+		return parts
+	}
+	urls := make([]string, 0, p.cfg.llmVisionMaxImages)
+	for _, t := range trimmed { // 时间序，每条最多 visionMaxImagesPerTurn 张
+		for i, u := range t.ImageURLs {
+			if i >= visionMaxImagesPerTurn {
+				break
+			}
+			urls = append(urls, u)
+		}
+	}
+	if len(urls) > p.cfg.llmVisionMaxImages {
+		urls = urls[len(urls)-p.cfg.llmVisionMaxImages:] // 取最后 N 张
+	}
+	for _, u := range urls {
+		parts = append(parts, contentPart{Type: "image_url", ImageURL: &imageURLPart{URL: u}})
+	}
+	return parts
 }
 
 // lastSender 返回历史中最后一条他人消息的显示名。
