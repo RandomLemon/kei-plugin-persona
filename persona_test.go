@@ -1,13 +1,14 @@
 package persona
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/RandomLemon/kei/pkg/bot"
 )
 
-func TestRenderTextAndFallbacks(t *testing.T) {
+func TestRenderMessage(t *testing.T) {
 	seg := func(tp bot.SegmentType, data map[string]any) bot.Segment {
 		return bot.Segment{Type: tp, Data: data}
 	}
@@ -30,138 +31,173 @@ func TestRenderTextAndFallbacks(t *testing.T) {
 		{"卡片回落", &bot.Message{Segments: []bot.Segment{seg(bot.SegCard, map[string]any{bot.KeyCard: "{}"})}}, "[卡片]"},
 		{"引用回落", &bot.Message{Segments: []bot.Segment{seg(bot.SegReply, map[string]any{bot.KeyMessageID: "x"})}}, "[引用]"},
 		{"未知回落", &bot.Message{Segments: []bot.Segment{seg(bot.SegmentType("weird"), nil)}}, "[消息]"},
+		{"图文混合内联占位", &bot.Message{Segments: []bot.Segment{
+			seg(bot.SegText, map[string]any{bot.KeyText: "看"}),
+			seg(bot.SegImage, map[string]any{bot.KeyURL: "http://x"}),
+		}}, "看[图片]"},
+		{"多图多占位", &bot.Message{Segments: []bot.Segment{
+			seg(bot.SegImage, map[string]any{bot.KeyURL: "http://x/1.jpg"}),
+			seg(bot.SegImage, map[string]any{bot.KeyURL: "http://x/2.jpg"}),
+		}}, "[图片][图片]"},
 		{"空消息", nil, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := renderText(tc.msg); got != tc.want {
-				t.Fatalf("renderText = %q, want %q", got, tc.want)
+			if got, _ := renderMessage(tc.msg); got != tc.want {
+				t.Fatalf("renderMessage = %q, want %q", got, tc.want)
 			}
 		})
 	}
 }
 
-func TestRenderHistoryBlock(t *testing.T) {
+// partText/partImage 是内容块断言用的紧凑构造器。
+func partText(s string) contentPart {
+	return contentPart{Type: "text", Text: s}
+}
+
+func partImage(u string) contentPart {
+	return contentPart{Type: "image_url", ImageURL: &imageURLPart{URL: u}}
+}
+
+func assertContentParts(t *testing.T, got, want contentParts) {
+	t.Helper()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("content 块 =\n%#v\nwant\n%#v", got, want)
+	}
+}
+
+func TestRenderUserContentBlocks(t *testing.T) {
 	env := newTestEnv(t, nil, nil)
 	history := []Turn{
 		{Name: "张三", Text: "今晚谁去打球"},
 		{Name: "李四", Text: "我可能不行"},
 		{Name: "小傲娇", Text: "打球可以啊", Self: true},
 	}
-	got := env.p.renderHistoryBlock(bot.MessageGroup, history)
-	want := "[群聊记录]\n张三: 今晚谁去打球\n李四: 我可能不行\n小傲娇: 打球可以啊\n\n"
-	if got != want {
-		t.Fatalf("renderHistoryBlock =\n%q\nwant\n%q", got, want)
-	}
+	got := env.p.renderUserContent(bot.MessageGroup, env.p.trimHistory(history), nil)
+	assertContentParts(t, got, contentParts{
+		partText("[群聊记录]"),
+		partText("张三: 今晚谁去打球"),
+		partText("李四: 我可能不行"),
+		partText("小傲娇: 打球可以啊"),
+	})
 }
 
-func TestRenderHistoryBlockPrivate(t *testing.T) {
+func TestRenderUserContentBlocksPrivate(t *testing.T) {
 	env := newTestEnv(t, nil, nil)
 	history := []Turn{
 		{Name: "张三", Text: "在吗"},
 		{Name: "小傲娇", Text: "在", Self: true},
 	}
-	got := env.p.renderHistoryBlock(bot.MessagePrivate, history)
-	want := "[私聊记录]\n张三: 在吗\n小傲娇: 在\n\n"
-	if got != want {
-		t.Fatalf("renderHistoryBlock(private) =\n%q\nwant\n%q", got, want)
-	}
+	got := env.p.renderUserContent(bot.MessagePrivate, env.p.trimHistory(history), nil)
+	assertContentParts(t, got, contentParts{
+		partText("[私聊记录]"),
+		partText("张三: 在吗"),
+		partText("小傲娇: 在"),
+	})
 }
 
-func TestRenderHistoryBlockTrimsOldest(t *testing.T) {
+func TestRenderUserContentBlocksTrimsOldest(t *testing.T) {
 	env := newTestEnv(t, nil, func(c map[string]any) { c["llm_history_max_chars"] = 6 })
 	history := []Turn{
 		{Name: "张三", Text: "aaaa"},
 		{Name: "李四", Text: "bbbb"},
 		{Name: "我", Text: "ccc"},
 	}
-	got := env.p.renderHistoryBlock(bot.MessageGroup, history)
-	if got != "[群聊记录]\n我: ccc\n\n" {
-		t.Fatalf("裁剪后 = %q", got)
-	}
+	got := env.p.renderUserContent(bot.MessageGroup, env.p.trimHistory(history), nil)
+	assertContentParts(t, got, contentParts{partText("[群聊记录]"), partText("我: ccc")})
 }
 
-// TestExtractImageURLs 覆盖图片 URL 的可用性判定：KeyURL 优先，KeyFile 仅 http(s)。
-func TestExtractImageURLs(t *testing.T) {
+// TestRenderMessageParts 覆盖分段结构：图片段的可用性判定（KeyURL 优先，KeyFile 仅 http(s)）与保序。
+func TestRenderMessageParts(t *testing.T) {
 	seg := func(data map[string]any) bot.Segment { return bot.Segment{Type: bot.SegImage, Data: data} }
 	cases := []struct {
 		name string
 		msg  *bot.Message
-		want []string
+		want []TurnPart
 	}{
 		{"nil 消息", nil, nil},
 		{"无图片段", &bot.Message{Segments: []bot.Segment{{Type: bot.SegText, Data: map[string]any{bot.KeyText: "hi"}}}}, nil},
 		{"KeyURL 命中", &bot.Message{Segments: []bot.Segment{seg(map[string]any{bot.KeyURL: "http://x/a.jpg"})}},
-			[]string{"http://x/a.jpg"}},
+			[]TurnPart{{Kind: turnPartImage, URL: "http://x/a.jpg"}}},
 		{"KeyFile 为 http URL 命中", &bot.Message{Segments: []bot.Segment{seg(map[string]any{bot.KeyFile: "https://x/b.png"})}},
-			[]string{"https://x/b.png"}},
-		{"KeyFile 为本地路径丢弃", &bot.Message{Segments: []bot.Segment{seg(map[string]any{bot.KeyFile: "/tmp/x.png"})}}, nil},
-		{"KeyFile 为平台文件 ID 丢弃", &bot.Message{Segments: []bot.Segment{seg(map[string]any{bot.KeyFile: "file_abc"})}}, nil},
+			[]TurnPart{{Kind: turnPartImage, URL: "https://x/b.png"}}},
+		{"KeyFile 为本地路径留空", &bot.Message{Segments: []bot.Segment{seg(map[string]any{bot.KeyFile: "/tmp/x.png"})}},
+			[]TurnPart{{Kind: turnPartImage}}},
+		{"KeyFile 为平台文件 ID 留空", &bot.Message{Segments: []bot.Segment{seg(map[string]any{bot.KeyFile: "file_abc"})}},
+			[]TurnPart{{Kind: turnPartImage}}},
 		{"KeyURL 优先于 KeyFile", &bot.Message{Segments: []bot.Segment{
 			seg(map[string]any{bot.KeyURL: "http://x/a.jpg", bot.KeyFile: "/tmp/b.png"}),
-		}}, []string{"http://x/a.jpg"}},
+		}}, []TurnPart{{Kind: turnPartImage, URL: "http://x/a.jpg"}}},
 		{"多图按序", &bot.Message{Segments: []bot.Segment{
 			seg(map[string]any{bot.KeyURL: "http://x/1.jpg"}),
 			{Type: bot.SegImage, Data: map[string]any{}},
 			seg(map[string]any{bot.KeyURL: "http://x/2.jpg"}),
-		}}, []string{"http://x/1.jpg", "http://x/2.jpg"}},
+		}}, []TurnPart{{Kind: turnPartImage, URL: "http://x/1.jpg"}, {Kind: turnPartImage}, {Kind: turnPartImage, URL: "http://x/2.jpg"}}},
+		{"图文混排", &bot.Message{Segments: []bot.Segment{
+			{Type: bot.SegText, Data: map[string]any{bot.KeyText: "看"}},
+			seg(map[string]any{bot.KeyURL: "http://x/1.jpg"}),
+			{Type: bot.SegText, Data: map[string]any{bot.KeyText: "这个"}},
+		}}, []TurnPart{
+			{Kind: turnPartText, Text: "看"},
+			{Kind: turnPartImage, URL: "http://x/1.jpg"},
+			{Kind: turnPartText, Text: "这个"},
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := extractImageURLs(tc.msg)
-			if len(got) != len(tc.want) {
-				t.Fatalf("extractImageURLs = %v, want %v", got, tc.want)
-			}
-			for i := range got {
-				if got[i] != tc.want[i] {
-					t.Fatalf("extractImageURLs[%d] = %q, want %q", i, got[i], tc.want[i])
-				}
+			_, got := renderMessage(tc.msg)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("renderMessage parts = %#v, want %#v", got, tc.want)
 			}
 		})
 	}
 }
 
-// TestRenderUserContentVisionOff 锁定关闭态：单个 text 块，内容与 renderHistoryBlock 逐字相同。
+// TestRenderUserContentVisionOff 锁定关闭态：无 image_url 块，图片槽位回落字面量 "[图片]"。
 func TestRenderUserContentVisionOff(t *testing.T) {
 	env := newTestEnv(t, nil, nil)
 	history := []Turn{
-		{Name: "张三", Text: "今晚谁去打球", ImageURLs: []string{"http://x/1.jpg"}},
+		{Name: "张三", Text: "今晚谁去打球", Parts: []TurnPart{{Kind: turnPartText, Text: "今晚谁去打球"}}},
 		{Name: "李四", Text: "我可能不行"},
+		{Name: "王五", Text: "看[图片]", Parts: []TurnPart{
+			{Kind: turnPartText, Text: "看"},
+			{Kind: turnPartImage, URL: "http://x/1.jpg"},
+		}},
 	}
-	parts := env.p.renderUserContent(bot.MessageGroup, history, nil)
-	if len(parts) != 1 || parts[0].Type != "text" {
-		t.Fatalf("关闭态应只有 text 块: %#v", parts)
-	}
-	if parts[0].Text != env.p.renderHistoryBlock(bot.MessageGroup, history) {
-		t.Fatalf("text 块应与 renderHistoryBlock 逐字相同: %q", parts[0].Text)
-	}
-	if parts[0].ImageURL != nil {
-		t.Fatal("text 块不应带 image_url")
-	}
+	got := env.p.renderUserContent(bot.MessageGroup, env.p.trimHistory(history), nil)
+	assertContentParts(t, got, contentParts{
+		partText("[群聊记录]"),
+		partText("张三: 今晚谁去打球"),
+		partText("李四: 我可能不行"),
+		partText("王五: 看[图片]"),
+	})
 }
 
-// TestRenderUserContentVisionOn 锁定开启态：text 块 + 逐个 images 项的 image_url 块。
+// TestRenderUserContentVisionOn 锁定开启态：图片落在各自消息的原位置，顺序不丢。
 func TestRenderUserContentVisionOn(t *testing.T) {
 	env := newTestEnv(t, nil, nil)
-	history := []Turn{
-		{Name: "张三", Text: "a"},
+	trimmed := []Turn{
+		{Name: "张三", Text: "a[图片]", Parts: []TurnPart{
+			{Kind: turnPartText, Text: "a"},
+			{Kind: turnPartImage, URL: "http://x/1.jpg"},
+		}},
 		{Name: "李四", Text: "b"},
-		{Name: "王五", Text: "c"},
+		{Name: "王五", Text: "[图片]", Parts: []TurnPart{{Kind: turnPartImage, URL: "http://x/3.jpg"}}},
 	}
-	images := []string{"data:image/png;base64,AAAA", "data:image/png;base64,BBBB"}
-	parts := env.p.renderUserContent(bot.MessageGroup, history, images)
-	if len(parts) != 3 {
-		t.Fatalf("应为 text + 2 张图: %#v", parts)
+	slots := [][]string{
+		{"", "data:image/png;base64,AAAA"},
+		nil,
+		{"data:image/png;base64,BBBB"},
 	}
-	if parts[0].Type != "text" || parts[0].Text != "[群聊记录]\n张三: a\n李四: b\n王五: c\n\n" {
-		t.Fatalf("text 块 = %#v", parts[0])
-	}
-	for i, w := range images {
-		p := parts[i+1]
-		if p.Type != "image_url" || p.ImageURL == nil || p.ImageURL.URL != w {
-			t.Fatalf("图片块[%d] = %#v, want %q", i, p, w)
-		}
-	}
+	got := env.p.renderUserContent(bot.MessageGroup, trimmed, slots)
+	assertContentParts(t, got, contentParts{
+		partText("[群聊记录]"),
+		partText("张三: a"),
+		partImage("data:image/png;base64,AAAA"),
+		partText("李四: b"),
+		partText("王五:"),
+		partImage("data:image/png;base64,BBBB"),
+	})
 }
 
 func TestRenderSystemPrompt(t *testing.T) {

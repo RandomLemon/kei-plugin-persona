@@ -163,6 +163,13 @@ persona: persona=tsundere 来源=override
 `Turn` 结构：
 
 ```go
+// TurnPart 是 Turn 中的一段内容，按原消息段顺序排列。
+type TurnPart struct {
+	Kind string // "text" 或 "image"
+	Text string // Kind=="text" 时有效
+	URL  string // Kind=="image" 时有效；抽取不到 URL 时为空串
+}
+
 type Turn struct {
 	At     time.Time
 	UserID string
@@ -171,33 +178,34 @@ type Turn struct {
 	Self   bool // 是否本插件自己发送
 	IsBot  bool // 发送者是否为机器人
 
-	ImageURLs []string // 本条消息中的图片 URL（KeyURL，或 http(s) 的 KeyFile）
+	Parts []TurnPart // 原消息的分段结构（含图片槽位）；为空表示无图片段，按 Text 渲染
 }
 ```
 
-- **单条渲染**：`<显示名>: <文本>`。自己发送的用当前人格 `display_name` 渲染；LLM 侧无角色区分（全部作为 user 消息的一部分）。
-- **`renderText(*bot.Message)`**：
+- **单条渲染**：`<显示名>: <文本>`，显示名取 `Name` → `UserID` → `未知`。自己发送的用当前人格 `display_name` 渲染；LLM 侧无角色区分（全部作为 user 消息的一部分）。
+- **`renderMessage(*bot.Message)`**（返回扁平文本与分段结构 `[]TurnPart`，单遍产出）：
   1. 按顺序拼接 `SegText`/`SegMarkdown` 的 `Data[bot.KeyText]`；
-  2. 拼接前对每个 `SegAt` 前置 `@<name 或 user_id> `（`Data[bot.KeyUserName]` 为空时用 `Data[bot.KeyUserID]`）；
-  3. `SegReply` 渲染为 `[引用]` 前缀；
-  4. 文本为空时按首个非文本段回落：`[图片]`/`[表情]`/`[文件]`/`[卡片]`/`[引用]`/`[消息]`。
-- **`extractImageURLs(*bot.Message)`**：抽取图片段中可用的 URL（`Data[bot.KeyURL]` 非空即取；否则仅当 `Data[bot.KeyFile]` 以 `http://`/`https://` 开头才取），填进 `Turn.ImageURLs`，**仅供多模态注入用**（见 [`llm.md`](llm.md) §9.1）；文本渲染仍按上面的回落规则输出 `[图片]`，与 `llm_vision_enabled` 无关。该函数只做纯 URL 抽取；下载与 base64 编码在 `vision.go`（见 [`architecture.md`](architecture.md) §5），失败时该图静默丢弃。自己发送的 `Turn` 不带 `ImageURLs`。
-- **最终 user 消息内容** = 头 + 每行一条（按时间序，含最新一条）+ 尾部空行。头按会话类型渲染：群聊 `[群聊记录]`、私聊 `[私聊记录]`。
+  2. 每个 `SegAt` 写 `@<name 或 user_id> `（`Data[bot.KeyUserName]` 为空时用 `Data[bot.KeyUserID]`）；
+  3. 每个 `SegImage` 在扁平文本里写 `[图片]`（与 `llm_vision_enabled` 无关，多图多占位），并在 `Parts` 的同一位置追加一个 `image` 段（`URL` 由 `imageSegURL` 抽取，抽取不到为空串）；相邻文本合并成一个 `text` 段；
+  4. 文本为空时按首个非文本段回落：`[图片]`/`[表情]`/`[文件]`/`[卡片]`/`[引用]`/`[消息]`；纯图片消息不走这条回落，其扁平文本即 `[图片]`、`Parts` 为单个 `image` 段；
+  5. 无图片段时 `Parts` 为 `nil`，调用方把整个条目按扁平文本渲染成单个 `text` 块。
+- **`imageSegURL(bot.Segment)`**：抽取单个图片段中可用的 URL（`Data[bot.KeyURL]` 非空即取；否则仅当 `Data[bot.KeyFile]` 以 `http://`/`https://` 开头才取）；**仅供多模态注入用**（见 [`llm.md`](llm.md) §9.1）。下载与 base64 编码在 `vision.go`（见 [`architecture.md`](architecture.md) §5），失败时该槽位回落字面量 `[图片]`（也不回落成原始 URL）。自己发送的 `Turn` 不带 `Parts`。
+- **最终 user 消息内容** = 首块历史头 + 其后按时间序每条历史自己的块。头按会话类型渲染：群聊 `[群聊记录]`、私聊 `[私聊记录]`；每条历史的文本合并成一个 `text` 块（该条首个 `text` 块带 `<显示名>: ` 前缀），图片在它原本的消息位置产出 `image_url` 块（槽位无可用 data URL 时以字面量 `[图片]` 留在文本里）。
 - **裁剪**：超过 `context_max_messages` 条、或超过 `llm_history_max_chars` 字符（按 **rune** 计）时从最旧丢弃，**始终保留最新一条**。
 - `Turn.At` 取 `ev.Time`，为零值时取 `p.now()`。
 
-完整示例块：
+完整示例块（三条历史，其中最新一条带一张可取图片）：
 
 ```text
-[群聊记录]
-张三: 今晚谁去打球
-李四: 我可能不行
-我: 打球可以啊
-张三: 那定八点
-
+[{"type":"text","text":"[群聊记录]"},
+ {"type":"text","text":"张三: 今晚谁去打球"},
+ {"type":"text","text":"李四: 我可能不行"},
+ {"type":"text","text":"我: 打球可以啊"},
+ {"type":"text","text":"张三: 那定八点，看这个"},
+ {"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}]
 ```
 
-（最后一行是尾部空行。`我` 用当前人格 `display_name` 渲染。）
+（`我` 用当前人格 `display_name` 渲染。`llm_vision_enabled=false`、图片不可取、或该槽位超出 `llm_vision_max_images` 时，最后一个块不存在，那条历史的文本块为 `"张三: 那定八点，看这个[图片]"`。）
 
 `channelState.distinctHumans(now, d)` 只统计 `Self == false && IsBot == false` 且时间在窗口内的 `Turn`，按 `UserID` 去重（`UserID` 为空时按下标计一条）。
 

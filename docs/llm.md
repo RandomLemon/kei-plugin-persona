@@ -13,15 +13,18 @@
 ```json
 {"model":"<llm_model>","temperature":0.8,"max_tokens":200,
  "messages":[{"role":"system","content":"<系统提示词>"},
-             {"role":"user","content":[{"type":"text","text":"[群聊记录]\n..."},
-                                       {"type":"image_url","image_url":{"url":"data:image/jpeg;base64,/9j/4AAQ..."}}]}]}
+             {"role":"user","content":[{"type":"text","text":"[群聊记录]"},
+                                       {"type":"text","text":"张三: 今晚谁去打球"},
+                                       {"type":"text","text":"李四: 看这个"},
+                                       {"type":"image_url","image_url":{"url":"data:image/jpeg;base64,/9j/4AAQ..."}},
+                                       {"type":"text","text":"小傲娇: 打球可以啊"}]}]}
 ```
 
 - `temperature`/`max_tokens` 取**当前人格**的覆盖值，缺失则回落全局键 `llm_temperature`/`llm_max_tokens`。
 - `system` 的 `content` 恒为**字符串**，是 `persona_template` 渲染结果，包含 11 个占位符（`{{persona}}`、`{{persona_name}}`、`{{chat_kind}}`、`{{channel_name}}`、`{{channel_id}}`、`{{platform}}`、`{{bot_name}}`、`{{now}}`、`{{last_sender}}`、`{{max_chars}}`、`{{skip_token}}`），模板全文与取值见 [`persona.md`](persona.md) §8.5（本文不重复）。
-- `user` 的 `content` 恒为**数组**：无图片时为单个 `text` 块（内容即历史渲染块，见 [`persona.md`](persona.md) §8.6）；`llm_vision_enabled=true` 时追加最多 `llm_vision_max_images` 个 `{"type":"image_url","image_url":{"url":"..."}}` 块。顺序固定：历史渲染块在前，图片在后。
+- `user` 的 `content` 恒为**数组**：首块是历史头（群聊 `[群聊记录]`、私聊 `[私聊记录]`），其后按时间序**每条历史产出自己的块**——文本合并成一个 `text` 块（该条首个 `text` 块带 `<显示名>: ` 前缀），图片在它原本的消息位置产出一个 `{"type":"image_url","image_url":{"url":"..."}}` 块（块形状与示例见 [`persona.md`](persona.md) §8.6）。
 
-图片块的来源与上限：图片由**插件自己下载**并内联为 `data:<mime>;base64,<数据>`，**不把原始 URL 交给 LLM**；下载用 `PluginContext.HTTPClient` 的 transport 克隆（`Proxy = nil`，`DialContext` 换成地址限制拨号器，见 [`architecture.md`](architecture.md) §5 `vision.go`），整批共用 10s 上限；拒绝回环/私网/链路本地/未指定/组播目标（含 DNS 解析结果）。只有 `SegImage` 的 `KeyURL` 参与；`KeyFile` 仅在取值为 `http(s)://` 开头时参与（本地路径/平台文件 ID 对远端 LLM 不可用，丢弃）。参与选取的是与文本块**同一裁剪结果**的历史（被 `llm_history_max_chars` 裁掉的最旧条目里的图片也不发），每条消息最多 1 张，按时间序取最后至多 `llm_vision_max_images` 张（`0` 表示不附加）。非 2xx、非 `image/*` MIME、超过 `llm_vision_max_image_bytes` 的图一律丢弃且不回落到 URL。`llm_vision_allowed_formats` 非空时只发送归一后格式名在清单内的图片（MIME 先取响应 `Content-Type`，非 `image/*` 时回落 `http.DetectContentType`），清单外的图丢弃（`reason=format`）且不回落到传 URL；不做格式转码。`llm_vision_enabled=false` 或 `llm_vision_max_images <= 0` 时不发任何图片块。图片块**不计入** `llm_history_max_chars`（该键只裁文本）。图片 URL 不持久化，进程重启即丢。
+图片块的来源与上限：图片由**插件自己下载**并内联为 `data:<mime>;base64,<数据>`，**不把原始 URL 交给 LLM**；下载用 `PluginContext.HTTPClient` 的 transport 克隆（`Proxy = nil`，`DialContext` 换成地址限制拨号器，见 [`architecture.md`](architecture.md) §5 `vision.go`），整批共用 10s 上限；拒绝回环/私网/链路本地/未指定/组播目标（含 DNS 解析结果）。只有 `SegImage` 的 `KeyURL` 参与；`KeyFile` 仅在取值为 `http(s)://` 开头时参与（本地路径/平台文件 ID 对远端 LLM 不可用，丢弃）。参与选取的是与文本块**同一裁剪结果**的历史（被 `llm_history_max_chars` 裁掉的最旧条目里的图片也不发），**每条消息取第一个带可用 URL 的图片段**（最多 1 张），跨消息按时间序取最后至多 `llm_vision_max_images` 个槽位（`0` 表示不附加）；未被选中或下载失败的槽位**回落字面量 `[图片]`**、留在该条历史的文本块里，而不是挪到尾部或回落成原始 URL。非 2xx、非 `image/*` MIME、超过 `llm_vision_max_image_bytes` 的图一律丢弃且不回落到 URL。`llm_vision_allowed_formats` 非空时只发送归一后格式名在清单内的图片（MIME 先取响应 `Content-Type`，非 `image/*` 时回落 `http.DetectContentType`），清单外的图丢弃（`reason=format`）且不回落到传 URL；不做格式转码。`llm_vision_enabled=false` 或 `llm_vision_max_images <= 0` 时不发任何图片块。图片块**不计入** `llm_history_max_chars`（该键只裁文本）。图片 URL 不持久化，进程重启即丢。
 
 **注入缝（逐字）**：
 

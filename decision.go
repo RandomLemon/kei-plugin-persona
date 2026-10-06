@@ -45,10 +45,10 @@ func (p *Plugin) handleChat(ctx context.Context, ev *bot.Event, r bot.Reply) err
 	} else if !p.policyAllowsGroup(channelID) {
 		return p.skipLog(key, "not_allowed", ev.Sender.ID)
 	}
-	text := renderText(ev.Message)
+	text, parts := renderMessage(ev.Message)
 	st := p.stateFor(ev)
 	if ev.Command == nil {
-		st.appendHistory(p.userTurn(ev, text))
+		st.appendHistory(p.userTurn(ev, text, parts))
 	}
 	// 懒加载未完成：暂存本条（有界单槽），加载完成后由 restoreState 补判，
 	// 保证新会话的第一条消息不被静默丢弃；加载期间到达的更新消息会覆盖单槽。
@@ -122,18 +122,17 @@ func (p *Plugin) decide(st *channelState, key string, ev *bot.Event, text string
 }
 
 // userTurn 由事件构造一条入站历史。
-func (p *Plugin) userTurn(ev *bot.Event, text string) Turn {
+func (p *Plugin) userTurn(ev *bot.Event, text string, parts []TurnPart) Turn {
 	at := ev.Time
 	if at.IsZero() {
 		at = p.now()
 	}
-	t := Turn{At: at, Text: text}
+	t := Turn{At: at, Text: text, Parts: parts}
 	if ev.Sender != nil {
 		t.UserID = ev.Sender.ID
 		t.Name = ev.Sender.Name
 		t.IsBot = ev.Sender.IsBot
 	}
-	t.ImageURLs = extractImageURLs(ev.Message)
 	return t
 }
 
@@ -341,11 +340,11 @@ func (p *Plugin) generate(st *channelState, epoch uint64, history []Turn) {
 	personaName, _ := p.resolvePersona(st)
 	pf := p.cfg.personas[personaName]
 
-	urls := p.selectVisionURLs(history)
-	images := p.fetchImageDataURLs(p.ctx, urls)
+	trimmed := p.trimHistory(history)
+	slots := p.fetchVisionSlots(p.ctx, p.selectVisionSlots(trimmed))
 	req := completionRequest{
 		System:      p.renderSystemPrompt(personaName, st, history),
-		User:        p.renderUserContent(chatKind, history, images),
+		User:        p.renderUserContent(chatKind, trimmed, slots),
 		Temperature: pf.Temperature,
 		MaxTokens:   pf.MaxTokens,
 	}

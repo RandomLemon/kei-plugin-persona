@@ -116,8 +116,8 @@ func (p *Plugin) debugSkipImage(raw, reason string, err error) {
 	p.log.Debug("persona 图片跳过", attrs...)
 }
 
-// fetchImageDataURLs 按序下载图片并返回 base64 data URL；失败/超限/非图片/格式不在白名单的图丢弃，
-// 保序返回其余。urls 为空时直接返回 nil（不建 ctx、不发请求）。
+// fetchImageDataURLs 按序下载图片并返回等长结果：成功为 data URL，
+// 失败/超限/非图片/格式不在白名单的位置为 ""。urls 为空时返回 nil（不建 ctx、不发请求）。
 func (p *Plugin) fetchImageDataURLs(ctx context.Context, urls []string) []string {
 	if len(urls) == 0 {
 		return nil
@@ -125,8 +125,8 @@ func (p *Plugin) fetchImageDataURLs(ctx context.Context, urls []string) []string
 	fctx, cancel := context.WithTimeout(ctx, visionFetchTimeout)
 	defer cancel()
 
-	out := make([]string, 0, len(urls))
-	for _, raw := range urls {
+	out := make([]string, len(urls))
+	for i, raw := range urls {
 		u, err := url.Parse(raw)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			p.debugSkipImage(raw, "bad_url", nil)
@@ -168,7 +168,31 @@ func (p *Plugin) fetchImageDataURLs(ctx context.Context, urls []string) []string
 			p.debugSkipImage(raw, "format", nil)
 			continue
 		}
-		out = append(out, dataURL(mime, data))
+		out[i] = dataURL(mime, data)
 	}
 	return out
+}
+
+// fetchVisionSlots 下载所有非空槽位并写回原槽位；下载失败的槽位保持空串（渲染时回落 "[图片]"）。
+// 无任何非空槽位时原样返回（不建 ctx、不发请求）。整批共用 fetchImageDataURLs 的 10s 上限。
+func (p *Plugin) fetchVisionSlots(ctx context.Context, slots [][]string) [][]string {
+	var urls []string
+	type pos struct{ i, j int }
+	var poss []pos
+	for i, row := range slots {
+		for j, u := range row {
+			if u != "" {
+				urls = append(urls, u)
+				poss = append(poss, pos{i, j})
+			}
+		}
+	}
+	if len(urls) == 0 {
+		return slots
+	}
+	got := p.fetchImageDataURLs(ctx, urls)
+	for k, pp := range poss {
+		slots[pp.i][pp.j] = got[k]
+	}
+	return slots
 }

@@ -127,9 +127,9 @@ handleChat(ev):
     if !policyAllowsPrivate(ev.Sender.ID):         return log(decision="skip", reason="not_allowed")  # 早于 stateFor
   else:
     if !policyAllowsGroup(channelID):              return log(decision="skip", reason="not_allowed")  # 早于 stateFor
-  text = renderText(ev.Message)
+  text, parts = renderMessage(ev.Message)         # 扁平文本 + 分段结构（图片段在原位置）
   st   = stateFor(ev)                             # 首次出现时异步触发 Storage 懒加载
-  if ev.Command == nil:                           st.appendHistory(userTurn(ev, text))            # 命令一律不进历史
+  if ev.Command == nil:                           st.appendHistory(userTurn(ev, text, parts))    # 命令一律不进历史
 
   if !st.deferOrLoaded(ev, text):                 # 懒加载未完成：暂存本条（有界单槽），
                                                   return log(decision="skip", reason="loading")   # 加载完成后由 finishLoad 补判
@@ -206,11 +206,11 @@ generate(st, epoch, history):
   personaName = resolvePersona(st)              # 覆盖 > bindings > default_persona
   st.mu.Unlock()
 
-  urls   = selectVisionURLs(history)                # 关闭视觉或无图片时为空
-  images = p.fetchImageDataURLs(p.ctx, urls)        # 下载失败/超限/格式不符的图丢弃，其余保序
+  trimmed = p.trimHistory(history)                  # 与文本裁剪同一结果，图片槽位与之一一对应
+  slots   = p.fetchVisionSlots(p.ctx, p.selectVisionSlots(trimmed))  # 关闭视觉或无图时为 nil；失败槽位留空
   req = completionRequest{
     System:      renderSystemPrompt(personaName, st, history),
-    User:        renderUserContent(st.kind, history, images),   # content 数组：text 块 + 已内联的 image_url 块
+    User:        renderUserContent(st.kind, trimmed, slots),  # 首块头 + 每条历史自己的块，图片在原位置
     Temperature: personaTemperature(personaName),   # 默认 llm_temperature
     MaxTokens:   personaMaxTokens(personaName),     # 默认 llm_max_tokens
   }

@@ -88,11 +88,15 @@ func (p *Plugin) renderSystemPrompt(personaName string, st *channelState, histor
 	return repl.Replace(tmpl)
 }
 
-// renderHistoryBlock 渲染 user 消息：头 + 每行一条 + 尾部空行。
-//
-// 超字符上限时从最旧丢弃，始终保留最新一条。
-func (p *Plugin) renderHistoryBlock(kind bot.MessageKind, history []Turn) string {
-	return p.renderHistoryText(kind, p.trimHistory(history))
+// turnName 返回历史的显示名：Name → UserID → "未知"。
+func turnName(t Turn) string {
+	if t.Name != "" {
+		return t.Name
+	}
+	if t.UserID != "" {
+		return t.UserID
+	}
+	return "未知"
 }
 
 // trimHistory 按 llm_history_max_chars 从最旧裁剪，始终保留最新一条。
@@ -102,14 +106,7 @@ func (p *Plugin) trimHistory(history []Turn) []Turn {
 	lines := make([]string, 0, len(history))
 	trimmed := make([]Turn, 0, len(history))
 	for _, t := range history {
-		name := t.Name
-		if name == "" {
-			name = t.UserID
-		}
-		if name == "" {
-			name = "未知"
-		}
-		lines = append(lines, name+": "+t.Text)
+		lines = append(lines, turnName(t)+": "+t.Text)
 		trimmed = append(trimmed, t)
 	}
 	total := 0
@@ -124,83 +121,102 @@ func (p *Plugin) trimHistory(history []Turn) []Turn {
 	return trimmed
 }
 
-// renderHistoryText 由已裁剪的历史渲染 user 文本块主体（头 + 行 + 尾部空行）。
-func (p *Plugin) renderHistoryText(kind bot.MessageKind, trimmed []Turn) string {
-	lines := make([]string, 0, len(trimmed))
-	for _, t := range trimmed {
-		name := t.Name
-		if name == "" {
-			name = t.UserID
-		}
-		if name == "" {
-			name = "未知"
-		}
-		lines = append(lines, name+": "+t.Text)
+// visionMaxImagesPerTurn 是单条入站消息最多参与多模态的图片数。
+const visionMaxImagesPerTurn = 1
+
+// imageSegURL 抽取单个图片段的可用 URL：KeyURL 非空即用；
+// 否则仅当 KeyFile 是 http(s) URL 时使用（本地路径/平台文件 ID 对远端 LLM 不可用）。
+func imageSegURL(seg bot.Segment) string {
+	if u := strOf(seg.Data[bot.KeyURL]); u != "" {
+		return u
 	}
+	if u := strOf(seg.Data[bot.KeyFile]); strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
+		return u
+	}
+	return ""
+}
+
+// selectVisionSlots 选出要下载的图片槽位，返回与 trimmed 等长的切片：
+// slots[i][j] 对应 trimmed[i].Parts[j]，仅被选中的 image 段非空（值为其 URL），其余为 ""。
+//
+// 关闭视觉（llm_vision_enabled=false 或 llm_vision_max_images<=0）时返回 nil。
+// 每条消息取第一个带非空 URL 的 image 段（visionMaxImagesPerTurn=1），
+// 跨消息按时间序取最后至多 llm_vision_max_images 个槽位。
+func (p *Plugin) selectVisionSlots(trimmed []Turn) [][]string {
+	if !p.cfg.llmVisionEnabled || p.cfg.llmVisionMaxImages <= 0 {
+		return nil
+	}
+	type slot struct{ turn, part int }
+	cands := make([]slot, 0, len(trimmed))
+	for ti, t := range trimmed { // 时间序，每条最多 visionMaxImagesPerTurn 张
+		picked := 0
+		for pi, pt := range t.Parts {
+			if pt.Kind != turnPartImage || pt.URL == "" {
+				continue
+			}
+			cands = append(cands, slot{turn: ti, part: pi})
+			if picked++; picked >= visionMaxImagesPerTurn {
+				break
+			}
+		}
+	}
+	if len(cands) == 0 {
+		return nil
+	}
+	if len(cands) > p.cfg.llmVisionMaxImages {
+		cands = cands[len(cands)-p.cfg.llmVisionMaxImages:] // 取最后 N 张
+	}
+	slots := make([][]string, len(trimmed))
+	for _, c := range cands {
+		if slots[c.turn] == nil {
+			slots[c.turn] = make([]string, len(trimmed[c.turn].Parts))
+		}
+		slots[c.turn][c.part] = trimmed[c.turn].Parts[c.part].URL
+	}
+	return slots
+}
+
+// renderUserContent 渲染 user 的 content 数组：首块为历史头（[群聊记录]/[私聊记录]），
+// 其后按时间序每条历史产出若干块——文本段合并成 text 块（该条首个 text 块带 "<显示名>: " 前缀），
+// image 段在槽位有 data URL 时于原位置产出 image_url 块，否则以字面量 "[图片]" 留在文本里。
+// slots[i][j] 对应 trimmed[i].Parts[j]；Parts 为空的条目按 Text 渲染单个 text 块。
+func (p *Plugin) renderUserContent(kind bot.MessageKind, trimmed []Turn, slots [][]string) contentParts {
 	head := "[群聊记录]"
 	if kind == bot.MessagePrivate {
 		head = "[私聊记录]"
 	}
-	return head + "\n" + strings.Join(lines, "\n") + "\n\n"
-}
-
-// visionMaxImagesPerTurn 是单条入站消息最多参与多模态的图片数。
-const visionMaxImagesPerTurn = 1
-
-// extractImageURLs 抽取图片段的可用 URL：KeyURL 非空即用；
-// 否则仅当 KeyFile 是 http(s) URL 时使用（本地路径/平台文件 ID 对远端 LLM 不可用）。
-func extractImageURLs(msg *bot.Message) []string {
-	if msg == nil {
-		return nil
-	}
-	var out []string
-	for _, seg := range msg.Segments {
-		if seg.Type != bot.SegImage {
-			continue
-		}
-		if u := strOf(seg.Data[bot.KeyURL]); u != "" {
-			out = append(out, u)
-			continue
-		}
-		if u := strOf(seg.Data[bot.KeyFile]); strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
-			out = append(out, u)
-		}
-	}
-	return out
-}
-
-// selectVisionURLs 选出要作为多模态输入下载的图片 URL。
-//
-// 关闭视觉（llm_vision_enabled=false 或 llm_vision_max_images<=0）时返回 nil；
-// 否则基于与文本块同一裁剪结果，按时间序每条消息最多 visionMaxImagesPerTurn 张，
-// 再取最后至多 llm_vision_max_images 张。
-func (p *Plugin) selectVisionURLs(history []Turn) []string {
-	if !p.cfg.llmVisionEnabled || p.cfg.llmVisionMaxImages <= 0 {
-		return nil
-	}
-	trimmed := p.trimHistory(history)
-	urls := make([]string, 0, p.cfg.llmVisionMaxImages)
-	for _, t := range trimmed { // 时间序，每条最多 visionMaxImagesPerTurn 张
-		for i, u := range t.ImageURLs {
-			if i >= visionMaxImagesPerTurn {
-				break
+	parts := contentParts{{Type: "text", Text: head}}
+	for i, t := range trimmed {
+		buf := turnName(t) + ": "
+		flush := func() {
+			if buf != "" {
+				parts = append(parts, contentPart{Type: "text", Text: strings.TrimRight(buf, " ")})
+				buf = ""
 			}
-			urls = append(urls, u)
 		}
-	}
-	if len(urls) > p.cfg.llmVisionMaxImages {
-		urls = urls[len(urls)-p.cfg.llmVisionMaxImages:] // 取最后 N 张
-	}
-	return urls
-}
-
-// renderUserContent 渲染 user 的 content 数组：text 块 + 每个 images 项一个 image_url 块。
-// images 是已下载并编码好的 data URL（见 vision.go），本函数不做 I/O。
-func (p *Plugin) renderUserContent(kind bot.MessageKind, history []Turn, images []string) contentParts {
-	trimmed := p.trimHistory(history)
-	parts := contentParts{{Type: "text", Text: p.renderHistoryText(kind, trimmed)}}
-	for _, u := range images {
-		parts = append(parts, contentPart{Type: "image_url", ImageURL: &imageURLPart{URL: u}})
+		if len(t.Parts) == 0 {
+			buf += t.Text
+			flush()
+			continue
+		}
+		for j, pt := range t.Parts {
+			switch pt.Kind {
+			case turnPartText:
+				buf += pt.Text
+			case turnPartImage:
+				var u string
+				if i < len(slots) && j < len(slots[i]) {
+					u = slots[i][j]
+				}
+				if u == "" {
+					buf += "[图片]"
+					continue
+				}
+				flush()
+				parts = append(parts, contentPart{Type: "image_url", ImageURL: &imageURLPart{URL: u}})
+			}
+		}
+		flush()
 	}
 	return parts
 }
@@ -212,28 +228,33 @@ func lastSender(history []Turn) string {
 		if t.Self {
 			continue
 		}
-		if t.Name != "" {
-			return t.Name
-		}
-		if t.UserID != "" {
-			return t.UserID
-		}
+		return turnName(t)
 	}
 	return "未知"
 }
 
-// renderText 把消息渲染成纯文本，@ 段前置 "@名 "。
-func renderText(msg *bot.Message) string {
+// renderMessage 渲染一条消息：扁平文本 + 分段结构。
+// 扁平文本中每个图片段写作 "[图片]"（与 llm_vision_enabled 无关）；
+// 无图片段时 Parts 为 nil（调用方按扁平文本渲染单个 text 块）。
+func renderMessage(msg *bot.Message) (string, []TurnPart) {
 	if msg == nil {
-		return ""
+		return "", nil
 	}
-	var b strings.Builder
-	hasText := false
+	var full, buf strings.Builder
+	var parts []TurnPart
+	hasText, hasImage := false, false
+	flush := func() {
+		if buf.Len() > 0 {
+			parts = append(parts, TurnPart{Kind: turnPartText, Text: buf.String()})
+			buf.Reset()
+		}
+	}
 	for _, seg := range msg.Segments {
 		switch seg.Type {
 		case bot.SegText, bot.SegMarkdown:
 			if s, ok := seg.Data[bot.KeyText].(string); ok {
-				b.WriteString(s)
+				full.WriteString(s)
+				buf.WriteString(s)
 				hasText = true
 			}
 		case bot.SegAt:
@@ -241,13 +262,24 @@ func renderText(msg *bot.Message) string {
 			if name == "" {
 				name = strOf(seg.Data[bot.KeyUserID])
 			}
-			b.WriteString("@" + name + " ")
+			full.WriteString("@" + name + " ")
+			buf.WriteString("@" + name + " ")
+		case bot.SegImage:
+			full.WriteString("[图片]")
+			hasText = true
+			hasImage = true
+			flush()
+			parts = append(parts, TurnPart{Kind: turnPartImage, URL: imageSegURL(seg)})
 		}
 	}
 	if !hasText {
-		return fallbackPlaceholder(msg)
+		return fallbackPlaceholder(msg), nil
 	}
-	return b.String()
+	if !hasImage {
+		return full.String(), nil
+	}
+	flush()
+	return full.String(), parts
 }
 
 // fallbackPlaceholder 按首个非文本段返回占位符。

@@ -906,35 +906,50 @@ func TestVisionDecisionRequestShape(t *testing.T) {
 		return parts
 	}
 
-	t.Run("关闭态为仅含 text 块的数组且不含 image_url", func(t *testing.T) {
+	partTextAt := func(t *testing.T, parts []any, i int) string {
+		t.Helper()
+		p, _ := parts[i].(map[string]any)
+		if p["type"] != "text" {
+			t.Fatalf("块[%d] = %#v, want text", i, parts[i])
+		}
+		if _, ok := p["image_url"]; ok {
+			t.Fatalf("text 块[%d] 不应带 image_url: %#v", i, p)
+		}
+		s, _ := p["text"].(string)
+		return s
+	}
+
+	t.Run("关闭态为块数组且图片回落字面量", func(t *testing.T) {
 		body, _ := run(t, false, true, nil, "/a.png")
 		parts := userContent(t, body)
-		if len(parts) != 1 {
-			t.Fatalf("关闭态 content 应为长度 1 的数组, got %#v", parts)
+		if len(parts) != 2 {
+			t.Fatalf("关闭态 content 应为长度 2 的数组, got %#v", parts)
 		}
-		p0, _ := parts[0].(map[string]any)
-		if p0["type"] != "text" {
-			t.Fatalf("首个块 = %#v", p0)
+		if got := partTextAt(t, parts, 0); got != "[群聊记录]" {
+			t.Fatalf("头块 = %q", got)
 		}
-		if s, _ := p0["text"].(string); !strings.Contains(s, "看这张图") {
-			t.Fatalf("text 块 = %#v", p0["text"])
-		}
-		if raw, ok := p0["image_url"]; ok {
-			t.Fatalf("关闭态不应有 image_url: %#v", raw)
+		if got := partTextAt(t, parts, 1); got != "张三: @小助手 看这张图[图片]" {
+			t.Fatalf("历史块 = %q", got)
 		}
 	})
 
-	t.Run("开启态内联 base64", func(t *testing.T) {
+	t.Run("开启态内联 base64 且图片落在原位置", func(t *testing.T) {
 		body, _ := run(t, true, true, nil, "/a.png")
 		parts := userContent(t, body)
-		if len(parts) != 2 {
-			t.Fatalf("开启态 content 应为长度 2 的数组, got %#v", parts)
+		if len(parts) != 3 {
+			t.Fatalf("开启态 content 应为长度 3 的数组, got %#v", parts)
 		}
-		p1, _ := parts[1].(map[string]any)
-		if p1["type"] != "image_url" {
-			t.Fatalf("第二块 = %#v", p1)
+		if got := partTextAt(t, parts, 0); got != "[群聊记录]" {
+			t.Fatalf("头块 = %q", got)
 		}
-		img, _ := p1["image_url"].(map[string]any)
+		if got := partTextAt(t, parts, 1); got != "张三: @小助手 看这张图" {
+			t.Fatalf("历史块 = %q", got)
+		}
+		p2, _ := parts[2].(map[string]any)
+		if p2["type"] != "image_url" {
+			t.Fatalf("第三块 = %#v", p2)
+		}
+		img, _ := p2["image_url"].(map[string]any)
 		urlStr, _ := img["url"].(string)
 		const prefix = "data:image/png;base64,"
 		if !strings.HasPrefix(urlStr, prefix) {
@@ -955,11 +970,11 @@ func TestVisionDecisionRequestShape(t *testing.T) {
 	t.Run("地址限制生效", func(t *testing.T) {
 		body, env := run(t, true, false, nil, "/a.png")
 		parts := userContent(t, body)
-		if len(parts) != 1 {
-			t.Fatalf("回环图片应被丢弃, got %#v", parts)
+		if len(parts) != 2 {
+			t.Fatalf("回环图片应被丢弃并回落占位符, got %#v", parts)
 		}
-		if p0, _ := parts[0].(map[string]any); p0["type"] != "text" {
-			t.Fatalf("首个块 = %#v", parts[0])
+		if got := partTextAt(t, parts, 1); got != "张三: @小助手 看这张图[图片]" {
+			t.Fatalf("历史块 = %q", got)
 		}
 		if !env.cap.hasMsg("persona 图片跳过") {
 			t.Fatal("应记录 persona 图片跳过")
@@ -969,11 +984,11 @@ func TestVisionDecisionRequestShape(t *testing.T) {
 	t.Run("格式白名单外不发送图片块", func(t *testing.T) {
 		body, env := run(t, true, true, []any{"png"}, "/b.jpg")
 		parts := userContent(t, body)
-		if len(parts) != 1 {
-			t.Fatalf("白名单外图片应被丢弃, got %#v", parts)
+		if len(parts) != 2 {
+			t.Fatalf("白名单外图片应被丢弃并回落占位符, got %#v", parts)
 		}
-		if p0, _ := parts[0].(map[string]any); p0["type"] != "text" {
-			t.Fatalf("首个块 = %#v", parts[0])
+		if got := partTextAt(t, parts, 1); got != "张三: @小助手 看这张图[图片]" {
+			t.Fatalf("历史块 = %q", got)
 		}
 		if !env.cap.hasAttr("reason", "format") {
 			t.Error("应记录 reason=format 的丢弃日志")

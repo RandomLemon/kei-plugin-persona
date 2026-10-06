@@ -105,8 +105,8 @@ func TestFetchImageDataURLs(t *testing.T) {
 		srv.URL + "/ok.gif",        // 缺省白名单 = 不过滤任何已识别格式
 	}
 	got := env.p.fetchImageDataURLs(context.Background(), urls)
-	if len(got) != 4 {
-		t.Fatalf("应保留 4 张成功图片, got %d: %#v", len(got), got)
+	if len(got) != len(urls) {
+		t.Fatalf("结果应与入参等长（%d），got %d: %#v", len(urls), len(got), got)
 	}
 	if raw := decode(t, got[0]); string(raw) != string(png) {
 		t.Fatalf("got[0] 解码 = %q, want %q", raw, png)
@@ -114,11 +114,16 @@ func TestFetchImageDataURLs(t *testing.T) {
 	if raw := decode(t, got[1]); string(raw) != string(png) {
 		t.Fatalf("got[1]（无 image/* Content-Type 但魔数为 PNG）解码 = %q", raw)
 	}
-	if raw := decode(t, got[2]); string(raw) != string(png) {
-		t.Fatalf("got[2] 解码 = %q, want %q", raw, png)
+	if raw := decode(t, got[6]); string(raw) != string(png) {
+		t.Fatalf("got[6]（跳过失败项后仍保位）解码 = %q, want %q", raw, png)
 	}
-	if !strings.HasPrefix(got[3], "data:image/gif;base64,") {
-		t.Fatalf("got[3] = %q, want image/gif data URL", got[3])
+	if !strings.HasPrefix(got[7], "data:image/gif;base64,") {
+		t.Fatalf("got[7] = %q, want image/gif data URL", got[7])
+	}
+	for _, i := range []int{2, 3, 4, 5} {
+		if got[i] != "" {
+			t.Errorf("got[%d] 应为空串（失败项留位）: %q", i, got[i])
+		}
 	}
 
 	for _, reason := range []string{"not_image", "too_large", "status", "fetch_error"} {
@@ -149,33 +154,85 @@ func TestFetchImageDataURLsFormatWhitelist(t *testing.T) {
 	env := newTestEnv(t, nil, func(c map[string]any) { c["llm_vision_allowed_formats"] = "PNG,image/gif" })
 	env.p.imgClient = srv.Client()
 
-	got := env.p.fetchImageDataURLs(context.Background(), []string{
+	urls := []string{
 		srv.URL + "/a.png", srv.URL + "/b.jpeg", srv.URL + "/c.gif",
-	})
-	if len(got) != 2 {
-		t.Fatalf("白名单内应保留 2 张, got %d: %#v", len(got), got)
+	}
+	got := env.p.fetchImageDataURLs(context.Background(), urls)
+	if len(got) != len(urls) {
+		t.Fatalf("结果应与入参等长（%d），got %d: %#v", len(urls), len(got), got)
 	}
 	if !strings.HasPrefix(got[0], "data:image/png;base64,") {
 		t.Errorf("got[0] = %q, want image/png data URL", got[0])
 	}
-	if !strings.HasPrefix(got[1], "data:image/gif;base64,") {
-		t.Errorf("got[1] = %q, want image/gif data URL", got[1])
+	if got[1] != "" {
+		t.Errorf("got[1]（白名单外）应为空串: %q", got[1])
+	}
+	if !strings.HasPrefix(got[2], "data:image/gif;base64,") {
+		t.Errorf("got[2] = %q, want image/gif data URL", got[2])
 	}
 	if !env.cap.hasAttr("reason", "format") {
 		t.Error("缺少 reason=format 的丢弃日志")
 	}
 }
 
-func TestSelectVisionURLs(t *testing.T) {
+// TestFetchVisionSlotsWritesBack 锁定槽位下载：等长写回，失败槽位保持空串。
+func TestFetchVisionSlotsWritesBack(t *testing.T) {
+	png := append([]byte("\x89PNG\r\n\x1a\n"), []byte("vision-payload")...)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ok.png" {
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(png)
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	env := newTestEnv(t, nil, nil)
+	env.p.imgClient = srv.Client() // 绕过地址限制：httptest 监听回环
+
+	slots := [][]string{nil, {"", srv.URL + "/ok.png", srv.URL + "/bad"}}
+	got := env.p.fetchVisionSlots(context.Background(), slots)
+	if &got[0] != &slots[0] {
+		t.Fatal("应原地写回同一切片")
+	}
+	if got[1][0] != "" {
+		t.Errorf("空槽位不应被写入: %q", got[1][0])
+	}
+	if !strings.HasPrefix(got[1][1], "data:image/png;base64,") {
+		t.Errorf("got[1][1] = %q, want image/png data URL", got[1][1])
+	}
+	if got[1][2] != "" {
+		t.Errorf("下载失败的槽位应留空: %q", got[1][2])
+	}
+
+	// 无任何非空槽位：不建 ctx、不发请求，原样返回。
+	empty := [][]string{{""}, nil}
+	if out := env.p.fetchVisionSlots(context.Background(), empty); &out[0] != &empty[0] {
+		t.Fatal("空槽位输入应原样返回")
+	}
+}
+
+func TestSelectVisionSlots(t *testing.T) {
 	history := []Turn{
-		{Name: "张三", Text: "a", ImageURLs: []string{"http://x/1.jpg", "http://x/1b.jpg"}},
-		{Name: "李四", Text: "b", ImageURLs: []string{"http://x/2.jpg"}},
-		{Name: "王五", Text: "c", ImageURLs: []string{"http://x/3.jpg"}},
+		{Name: "张三", Text: "a", Parts: []TurnPart{
+			{Kind: turnPartText, Text: "a"},
+			{Kind: turnPartImage, URL: "http://x/1.jpg"},
+			{Kind: turnPartImage, URL: "http://x/1b.jpg"},
+		}},
+		{Name: "李四", Text: "b", Parts: []TurnPart{
+			{Kind: turnPartText, Text: "b"},
+			{Kind: turnPartImage, URL: "http://x/2.jpg"},
+		}},
+		{Name: "王五", Text: "c", Parts: []TurnPart{
+			{Kind: turnPartText, Text: "c"},
+			{Kind: turnPartImage, URL: "http://x/3.jpg"},
+		}},
 	}
 
 	t.Run("关闭时返回 nil", func(t *testing.T) {
 		env := newTestEnv(t, nil, nil)
-		if got := env.p.selectVisionURLs(history); got != nil {
+		if got := env.p.selectVisionSlots(history); got != nil {
 			t.Fatalf("关闭态应返回 nil, got %#v", got)
 		}
 	})
@@ -185,7 +242,7 @@ func TestSelectVisionURLs(t *testing.T) {
 			c["llm_vision_enabled"] = true
 			c["llm_vision_max_images"] = 0
 		})
-		if got := env.p.selectVisionURLs(history); got != nil {
+		if got := env.p.selectVisionSlots(history); got != nil {
 			t.Fatalf("上限 0 应返回 nil, got %#v", got)
 		}
 	})
@@ -195,15 +252,29 @@ func TestSelectVisionURLs(t *testing.T) {
 			c["llm_vision_enabled"] = true
 			c["llm_vision_max_images"] = 2
 		})
-		want := []string{"http://x/2.jpg", "http://x/3.jpg"}
-		got := env.p.selectVisionURLs(history)
-		if len(got) != len(want) {
-			t.Fatalf("got %#v, want %#v", got, want)
+		got := env.p.selectVisionSlots(history)
+		if len(got) != len(history) {
+			t.Fatalf("应与 trimmed 等长（%d），got %#v", len(history), got)
 		}
-		for i := range want {
-			if got[i] != want[i] {
-				t.Fatalf("got[%d] = %q, want %q", i, got[i], want[i])
+		if got[0] != nil {
+			t.Errorf("张三那条被上限裁掉，应为 nil: %#v", got[0])
+		}
+		want := [][]string{nil, {"", "http://x/2.jpg"}, {"", "http://x/3.jpg"}}
+		for i := 1; i < len(want); i++ {
+			if len(got[i]) != len(want[i]) || got[i][0] != "" || got[i][1] != want[i][1] {
+				t.Fatalf("got[%d] = %#v, want %#v", i, got[i], want[i])
 			}
+		}
+	})
+
+	t.Run("每条消息只取第一个可用图片段", func(t *testing.T) {
+		env := newTestEnv(t, nil, func(c map[string]any) {
+			c["llm_vision_enabled"] = true
+			c["llm_vision_max_images"] = 4
+		})
+		got := env.p.selectVisionSlots(history)
+		if got[0][1] != "http://x/1.jpg" || got[0][2] != "" {
+			t.Fatalf("张三那条应只命中首个图片段: %#v", got[0])
 		}
 	})
 
@@ -212,16 +283,27 @@ func TestSelectVisionURLs(t *testing.T) {
 			c["llm_vision_enabled"] = true
 			c["llm_history_max_chars"] = 3
 		})
-		got := env.p.selectVisionURLs(history)
-		if len(got) != 1 || got[0] != "http://x/3.jpg" {
-			t.Fatalf("got %#v, want [http://x/3.jpg]", got)
+		trimmed := env.p.trimHistory(history)
+		if len(trimmed) != 1 || trimmed[0].Name != "王五" {
+			t.Fatalf("裁剪结果 = %#v", trimmed)
+		}
+		got := env.p.selectVisionSlots(trimmed)
+		if len(got) != 1 || got[0][1] != "http://x/3.jpg" {
+			t.Fatalf("got %#v, want 仅王五槽位命中", got)
 		}
 	})
 
-	t.Run("imgs 无 URL 时不产生候选", func(t *testing.T) {
+	t.Run("无图或无可用 URL 时不产生候选", func(t *testing.T) {
 		env := newTestEnv(t, nil, func(c map[string]any) { c["llm_vision_enabled"] = true })
-		if got := env.p.selectVisionURLs([]Turn{{Name: "甲", Text: "a"}}); len(got) != 0 {
-			t.Fatalf("got %#v, want empty", got)
+		if got := env.p.selectVisionSlots([]Turn{{Name: "甲", Text: "a", Parts: []TurnPart{{Kind: turnPartText, Text: "a"}}}}); got != nil {
+			t.Fatalf("无图片段应返回 nil, got %#v", got)
+		}
+		img := []Turn{{Name: "甲", Text: "a[图片]", Parts: []TurnPart{
+			{Kind: turnPartText, Text: "a"},
+			{Kind: turnPartImage},
+		}}}
+		if got := env.p.selectVisionSlots(img); got != nil {
+			t.Fatalf("URL 为空的图片段应返回 nil, got %#v", got)
 		}
 	})
 }
@@ -239,7 +321,10 @@ func TestVisionDefaultsOffNoImageBlocks(t *testing.T) {
 	if tr.Proxy != nil {
 		t.Fatal("imgClient 不应使用环境代理")
 	}
-	if got := env.p.selectVisionURLs([]Turn{{Name: "甲", Text: "a", ImageURLs: []string{"http://x/1.jpg"}}}); got != nil {
+	if got := env.p.selectVisionSlots([]Turn{{Name: "甲", Text: "a[图片]", Parts: []TurnPart{
+		{Kind: turnPartText, Text: "a"},
+		{Kind: turnPartImage, URL: "http://x/1.jpg"},
+	}}}); got != nil {
 		t.Fatalf("默认配置下应返回 nil, got %#v", got)
 	}
 }

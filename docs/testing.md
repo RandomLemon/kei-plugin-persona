@@ -76,7 +76,7 @@ go test -race ./...
 | `Start` 阶段 ctx 在阶段返回后被 cancel（模拟 kei 的 `defer cancel()`） | 插件级 ctx 仍可用：私聊照常回复（`context.WithoutCancel` 派生） |
 | 模板渲染 11 个占位符 | 每个占位符被替换为预期值（含 `{{chat_kind}}` = `群聊`/`私聊`） |
 | 模板含未知占位符（如 `{{unknown}}`） | 原样保留 |
-| 历史渲染 6 种回落 | `[图片]` / `[表情]` / `[文件]` / `[卡片]` / `[引用]` / `[消息]` 分别命中 |
+| 历史渲染 6 种回落 | `[图片]` / `[表情]` / `[文件]` / `[卡片]` / `[引用]` / `[消息]` 分别命中；`[图片]` 亦为图文混排里每个图片段的内联占位（多图多占位） |
 | 历史块头按会话类型 | 群聊 `[群聊记录]`、私聊 `[私聊记录]` |
 | 历史裁剪 | 超 `context_max_messages` 或 `llm_history_max_chars`（rune）从最旧丢弃，保留最新一条 |
 | 清洗管线 8 步（见 [`persona.md`](persona.md) §8.7） | 每条输入→输出样例一致 |
@@ -91,8 +91,8 @@ go test -race ./...
 | `llm.go` 非法 JSON | 返回错误 |
 | `llm.go` 缺 choices | 返回错误 |
 | `llm.go` 超时（`llm_timeout` 极短） | 返回错误，`reason=llm_error` |
-| 多模态开关关闭（`llm_vision_enabled=false`） | 请求体 `messages[1].content` 为只含一个 `text` 块的数组，不含 `image_url`；文本与该历史下的 `renderHistoryBlock` 逐字相同 |
-| 多模态开关开启（`llm_vision_enabled=true`） | 图片由插件下载后内联为 `data:<mime>;base64,<数据>`；请求体 `messages[1].content` 为数组，末元素为 `{"type":"image_url","image_url":{"url":"data:..."}}`；原始 URL 不出现在请求体中；每条消息最多 1 张、总数受 `llm_vision_max_images` 限制、被文本裁剪丢掉的条目里的图片不发 |
+| 多模态开关关闭（`llm_vision_enabled=false`） | 请求体 `messages[1].content` 为块数组：首块 `{"type":"text","text":"[群聊记录]"}`，其后每条历史一个 `text` 块（`<显示名>: ` 前缀）；图片槽位回落字面量 `[图片]`，任何块都不含 `image_url` |
+| 多模态开关开启（`llm_vision_enabled=true`） | 图片由插件下载后内联为 `data:<mime>;base64,<数据>`，并在该条历史原本的消息位置产出 `{"type":"image_url","image_url":{"url":"data:..."}}` 块（前一块的文本到此截断）；原始 URL 不出现在请求体中；每条消息最多 1 张（取首个带 URL 的图片段）、总数受 `llm_vision_max_images` 限制（按时间序取最后 N 张）、被文本裁剪丢掉的条目里的图片不发 |
 | 图片下载失败路径 | 非 2xx、非 `image/*`、格式不在白名单、超过 `llm_vision_max_image_bytes`、连接失败的图各自被丢弃（`reason` 分别 `status`/`not_image`/`format`/`too_large`/`fetch_error`），其余图片与文本照常发送，不回落到传 URL |
 | 图片格式白名单（`llm_vision_allowed_formats=["png"]`，混合 png/jpeg） | 仅 png 进请求体；jpeg 被丢弃且 `reason=format`；未配置时不丢弃任何已识别格式 |
 | 图片地址限制 | 回环/私网/链路本地/未指定/组播目标（含 DNS 解析结果）被拒；拨号时才校验（重定向同样受限）；`data:`/非 http(s) scheme 直接丢弃 |

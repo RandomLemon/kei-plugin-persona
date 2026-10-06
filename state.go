@@ -12,6 +12,18 @@ import (
 	"github.com/RandomLemon/kei/pkg/bot"
 )
 
+// TurnPart 是 Turn 中的一段内容，按原消息段顺序排列。
+type TurnPart struct {
+	Kind string // turnPartText 或 turnPartImage
+	Text string // Kind==turnPartText 时有效
+	URL  string // Kind==turnPartImage 时有效；抽取不到 URL 时为空串
+}
+
+const (
+	turnPartText  = "text"
+	turnPartImage = "image"
+)
+
 // Turn 是一条聊天记录，供历史渲染与计数使用。
 type Turn struct {
 	At     time.Time
@@ -21,7 +33,7 @@ type Turn struct {
 	Self   bool
 	IsBot  bool
 
-	ImageURLs []string // 本条消息的图片 URL（仅多模态注入用）
+	Parts []TurnPart // 原消息的分段结构（含图片槽位）；为空表示无图片段，按 Text 渲染
 }
 
 // channelState 是单个会话的状态。字段语义见 docs/architecture.md 第 4 章。
