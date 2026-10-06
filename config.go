@@ -92,19 +92,20 @@ type config struct {
 	contextMaxMessages int
 	contextMaxChannels int
 
-	llmBaseURL             string
-	llmAPIKey              string
-	llmModel               string
-	llmTemperature         float64
-	llmMaxTokens           int
-	llmTimeout             time.Duration
-	llmMaxRetries          int
-	llmSkipToken           string
-	llmHistoryMaxChars     int
-	llmExtraHeaders        map[string]string
-	llmVisionEnabled       bool
-	llmVisionMaxImages     int
-	llmVisionMaxImageBytes int
+	llmBaseURL              string
+	llmAPIKey               string
+	llmModel                string
+	llmTemperature          float64
+	llmMaxTokens            int
+	llmTimeout              time.Duration
+	llmMaxRetries           int
+	llmSkipToken            string
+	llmHistoryMaxChars      int
+	llmExtraHeaders         map[string]string
+	llmVisionEnabled        bool
+	llmVisionMaxImages      int
+	llmVisionMaxImageBytes  int
+	llmVisionAllowedFormats map[string]bool // nil 表示不过滤任何格式
 
 	replyMaxChars      int
 	replyMentionSender bool
@@ -149,6 +150,7 @@ func loadConfig(c *bot.Config) (*config, error) {
 	if cfg.llmVisionMaxImageBytes, err = r.intKey("llm_vision_max_image_bytes", 4<<20, "必须 >= 1"); err != nil {
 		return nil, err
 	}
+	cfg.llmVisionAllowedFormats = formatSet(readStringList(c, "llm_vision_allowed_formats"))
 
 	if cfg.personas, err = readPersonas(c, cfg); err != nil {
 		return nil, err

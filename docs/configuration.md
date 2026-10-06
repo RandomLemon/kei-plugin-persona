@@ -53,6 +53,7 @@
 | `llm_vision_enabled` | bool | `false` | 是否把入站图片作为多模态输入发给 LLM（需视觉模型） |
 | `llm_vision_max_images` | int | `4` | 单次请求最多附加的图片数；`0` 表示不附加 |
 | `llm_vision_max_image_bytes` | int | `4194304` | 单张图片下载体积上限（字节）；超限的图丢弃 |
+| `llm_vision_allowed_formats` | []string | `[]` | 允许发给 LLM 的图片格式白名单（如 `[jpeg, png, gif]`）；空表示不过滤。匹配大小写不敏感，可写 `image/` 前缀，`jpg` 等价 `jpeg` |
 
 `plugins.persona.enabled` 由 kei 读取（布尔或标量简写），不进入插件配置，也不在上表内。
 
@@ -145,6 +146,7 @@ plugins:
     llm_vision_enabled: false     # 开启后需配视觉模型（如 gpt-4o-mini）
     llm_vision_max_images: 4
     llm_vision_max_image_bytes: 4194304
+    llm_vision_allowed_formats: []       # 例：["jpeg", "png", "gif"]；空表示不过滤
 
     # ---- 回复 ----
     reply_max_chars: 200
@@ -182,6 +184,7 @@ export KEI_PLUGINS_PERSONA_DEBUG_PROMPTS=true
 # 列表键：裸标量或逗号分隔最自然（两者都被 readStringList 接受）
 export KEI_PLUGINS_PERSONA_SELF_IDS=123456789
 export KEI_PLUGINS_PERSONA_GROUP_LIST="389372103,389372104"
+export KEI_PLUGINS_PERSONA_LLM_VISION_ALLOWED_FORMATS="jpeg,png,gif"
 ```
 
 **覆盖范围**：`convertValue` 会把环境变量值按 YAML 规则解析（`internal/config/env.go`），因此映射与列表键**同样可以**用 env 覆盖，只是要写成 YAML/JSON 内联字面量：
@@ -274,9 +277,12 @@ persona: 配置错误 group_policy=all: 必须是 off|open|whitelist|blacklist �
 | `llm_vision_enabled` | 无额外校验 |
 | `llm_vision_max_images` | 必须 >= 0 |
 | `llm_vision_max_image_bytes` | 必须 >= 1 |
+| `llm_vision_allowed_formats` | 无额外校验；取值口径同 `self_ids`（列表键），元素按 §10.4 注归一 |
 
-**注（列表键的取值口径）**：`self_ids`、`trigger_keywords`、`group_list`、`private_list` 是四个 `[]string` 键，由 `readStringList` 读取。四者都兼容 YAML 的常见写法：`["123"]`（带引号）、`[123]`（裸数字）、`123`（裸标量）、`"123,456"`（逗号分隔）。元素一律按 YAML 语义转成字符串后使用，不做 `x.(string)` 类型断言丢弃。
+**注（列表键的取值口径）**：`self_ids`、`trigger_keywords`、`group_list`、`private_list`、`llm_vision_allowed_formats` 是五个 `[]string` 键，由 `readStringList` 读取。五者都兼容 YAML 的常见写法：`["123"]`（带引号）、`[123]`（裸数字）、`123`（裸标量）、`"123,456"`（逗号分隔）。元素一律按 YAML 语义转成字符串后使用，不做 `x.(string)` 类型断言丢弃。
 
 这与 `bot.Config.Strings` 的差异是**有意的**：`Strings` 对 `[]any` 分支只保留字符串元素，裸数字被静默丢弃。QQ 号常被写成裸数字，一旦被丢成空列表，`self_ids` 就会落入「空 = 任意 At 均算寻址」的语义（见 [`participation.md`](participation.md) §7.2），表现为 `@任何人都触发回复`。同理，`group_policy: whitelist` + `group_list: [123456]`（裸数字）会让白名单形同虚设（全员被拒）。
+
+`llm_vision_allowed_formats` 的元素读取后归一：去参数与 `image/` 前缀、转小写、`jpg`→`jpeg`，空元素丢弃；归一后为空即按未配置处理（不过滤任何格式）。
 
 补充：缺少 network 权限时 `PluginContext.HTTPClient == nil`，`Setup` 额外返回 `persona: 需要 network 权限`（见 [`llm.md`](llm.md) §9.1）。

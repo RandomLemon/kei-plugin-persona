@@ -46,7 +46,7 @@ addressed = 私聊 || mention || reply_to_self || keyword
 
 寻址判定只需要文本与消息段，不需要网络，因此可在 Handler 内完成。
 
-**列表键的取值口径**：`self_ids`、`trigger_keywords`、`group_list`、`private_list` 四个列表键经 `readStringList` 读取，兼容 `["123"]`、`[123]`（YAML 裸数字）、`123`（裸标量）、`"123,456"`（逗号分隔）四种写法，元素一律按 YAML 语义转成字符串后比对，不做类型断言丢弃。原因见 [`configuration.md`](configuration.md) §10.4。
+**列表键的取值口径**：`self_ids`、`trigger_keywords`、`group_list`、`private_list`、`llm_vision_allowed_formats` 五个列表键经 `readStringList` 读取，兼容 `["123"]`、`[123]`（YAML 裸数字）、`123`（裸标量）、`"123,456"`（逗号分隔）四种写法，元素一律按 YAML 语义转成字符串后比对，不做类型断言丢弃。原因见 [`configuration.md`](configuration.md) §10.4（`llm_vision_allowed_formats` 另按该节注归一：去 `image/` 前缀、转小写、`jpg`→`jpeg`）。
 
 ## 7.3 随机参与
 
@@ -207,7 +207,7 @@ generate(st, epoch, history):
   st.mu.Unlock()
 
   urls   = selectVisionURLs(history)                # 关闭视觉或无图片时为空
-  images = p.fetchImageDataURLs(p.ctx, urls)        # 下载失败/超限的图丢弃，其余保序
+  images = p.fetchImageDataURLs(p.ctx, urls)        # 下载失败/超限/格式不符的图丢弃，其余保序
   req = completionRequest{
     System:      renderSystemPrompt(personaName, st, history),
     User:        renderUserContent(st.kind, history, images),   # content 数组：text 块 + 已内联的 image_url 块

@@ -51,12 +51,16 @@ func TestDialVisionSafeRejectsLoopback(t *testing.T) {
 
 func TestFetchImageDataURLs(t *testing.T) {
 	png := append([]byte("\x89PNG\r\n\x1a\n"), []byte("vision-payload")...)
+	gifBytes := append([]byte("GIF89a"), []byte("vision-payload")...)
 	const limit = 4096
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/ok.png":
 			w.Header().Set("Content-Type", "image/png")
 			_, _ = w.Write(png)
+		case "/ok.gif":
+			w.Header().Set("Content-Type", "image/gif")
+			_, _ = w.Write(gifBytes)
 		case "/nomime.png":
 			w.Header().Set("Content-Type", "application/octet-stream")
 			_, _ = w.Write(png)
@@ -98,10 +102,11 @@ func TestFetchImageDataURLs(t *testing.T) {
 		srv.URL + "/bad",
 		"http://127.0.0.1:1/x.jpg", // 连接失败
 		srv.URL + "/ok.png",        // 末尾再放一张成功的，验证失败项被跳过而非截断
+		srv.URL + "/ok.gif",        // 缺省白名单 = 不过滤任何已识别格式
 	}
 	got := env.p.fetchImageDataURLs(context.Background(), urls)
-	if len(got) != 3 {
-		t.Fatalf("应保留 3 张成功图片, got %d: %#v", len(got), got)
+	if len(got) != 4 {
+		t.Fatalf("应保留 4 张成功图片, got %d: %#v", len(got), got)
 	}
 	if raw := decode(t, got[0]); string(raw) != string(png) {
 		t.Fatalf("got[0] 解码 = %q, want %q", raw, png)
@@ -112,11 +117,52 @@ func TestFetchImageDataURLs(t *testing.T) {
 	if raw := decode(t, got[2]); string(raw) != string(png) {
 		t.Fatalf("got[2] 解码 = %q, want %q", raw, png)
 	}
+	if !strings.HasPrefix(got[3], "data:image/gif;base64,") {
+		t.Fatalf("got[3] = %q, want image/gif data URL", got[3])
+	}
 
 	for _, reason := range []string{"not_image", "too_large", "status", "fetch_error"} {
 		if !env.cap.hasAttr("reason", reason) {
 			t.Errorf("缺少 reason=%s 的丢弃日志", reason)
 		}
+	}
+}
+
+func TestFetchImageDataURLsFormatWhitelist(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/a.png":
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(append([]byte("\x89PNG\r\n\x1a\n"), []byte("p")...))
+		case "/b.jpeg":
+			w.Header().Set("Content-Type", "image/jpeg")
+			_, _ = w.Write([]byte("\xff\xd8\xff\xe0jpeg"))
+		case "/c.gif":
+			w.Header().Set("Content-Type", "image/gif")
+			_, _ = w.Write([]byte("GIF89agif"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	env := newTestEnv(t, nil, func(c map[string]any) { c["llm_vision_allowed_formats"] = "PNG,image/gif" })
+	env.p.imgClient = srv.Client()
+
+	got := env.p.fetchImageDataURLs(context.Background(), []string{
+		srv.URL + "/a.png", srv.URL + "/b.jpeg", srv.URL + "/c.gif",
+	})
+	if len(got) != 2 {
+		t.Fatalf("白名单内应保留 2 张, got %d: %#v", len(got), got)
+	}
+	if !strings.HasPrefix(got[0], "data:image/png;base64,") {
+		t.Errorf("got[0] = %q, want image/png data URL", got[0])
+	}
+	if !strings.HasPrefix(got[1], "data:image/gif;base64,") {
+		t.Errorf("got[1] = %q, want image/gif data URL", got[1])
+	}
+	if !env.cap.hasAttr("reason", "format") {
+		t.Error("缺少 reason=format 的丢弃日志")
 	}
 }
 

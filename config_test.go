@@ -2,6 +2,7 @@ package persona
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
@@ -61,6 +62,9 @@ func TestLoadConfigDefaults(t *testing.T) {
 			t.Errorf("%s = %v, want %v", c.name, c.got, c.want)
 		}
 	}
+	if cfg.llmVisionAllowedFormats != nil {
+		t.Errorf("llm_vision_allowed_formats 默认应为 nil, got %#v", cfg.llmVisionAllowedFormats)
+	}
 	pf := cfg.personas["default"]
 	if pf.DisplayName != "default" || pf.Temperature != 0.8 || pf.MaxTokens != 200 || pf.SkipToken != "[SKIP]" {
 		t.Errorf("人格默认回落错误: %+v", pf)
@@ -71,6 +75,47 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.randomTimezone == nil {
 		t.Error("randomTimezone 未解析")
 	}
+}
+
+func TestLoadConfigVisionAllowedFormats(t *testing.T) {
+	base := func() map[string]any {
+		return map[string]any{"personas": map[string]any{"default": "p"}, "llm_model": "m"}
+	}
+
+	t.Run("归一为集合", func(t *testing.T) {
+		c := base()
+		c["llm_vision_allowed_formats"] = []any{"JPG", "image/png", " gif ", "", "image/jpeg;charset=x"}
+		cfg, err := loadConfig(bot.NewConfig(c))
+		if err != nil {
+			t.Fatalf("loadConfig: %v", err)
+		}
+		want := map[string]bool{"jpeg": true, "png": true, "gif": true}
+		if !reflect.DeepEqual(cfg.llmVisionAllowedFormats, want) {
+			t.Errorf("llmVisionAllowedFormats = %#v, want %#v", cfg.llmVisionAllowedFormats, want)
+		}
+	})
+
+	t.Run("空列表得 nil", func(t *testing.T) {
+		c := base()
+		c["llm_vision_allowed_formats"] = []any{}
+		cfg, err := loadConfig(bot.NewConfig(c))
+		if err != nil {
+			t.Fatalf("loadConfig: %v", err)
+		}
+		if cfg.llmVisionAllowedFormats != nil {
+			t.Errorf("空列表应得 nil, got %#v", cfg.llmVisionAllowedFormats)
+		}
+	})
+
+	t.Run("缺省得 nil", func(t *testing.T) {
+		cfg, err := loadConfig(bot.NewConfig(base()))
+		if err != nil {
+			t.Fatalf("loadConfig: %v", err)
+		}
+		if cfg.llmVisionAllowedFormats != nil {
+			t.Errorf("缺省应得 nil, got %#v", cfg.llmVisionAllowedFormats)
+		}
+	})
 }
 
 func TestLoadConfigAPIKeyOptional(t *testing.T) {

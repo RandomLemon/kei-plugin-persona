@@ -57,7 +57,7 @@
 ## 12.3 已知缺口
 
 - **无插件级指标**：核心只暴露自身 Prometheus 指标；本插件的观测面是 `/persona status` 与结构化日志（[`participation.md`](participation.md) §7.7）。
-- **多模态输入可选**：`llm_vision_enabled=true` 时插件下载最近入站图片（上限 `llm_vision_max_images`，每条消息最多 1 张，单张上限 `llm_vision_max_image_bytes`）并以 base64 内联发送给视觉模型，默认关闭（见 [`llm.md`](llm.md) §9.1）。
+- **多模态输入可选**：`llm_vision_enabled=true` 时插件下载最近入站图片（上限 `llm_vision_max_images`，每条消息最多 1 张，单张上限 `llm_vision_max_image_bytes`）并以 base64 内联发送给视觉模型，默认关闭（见 [`llm.md`](llm.md) §9.1）。`llm_vision_allowed_formats` 非空时只发送清单内的格式（跳过清单外格式，不转码）。
 - **无流式输出**：单次阻塞式补全，不支持 SSE 流式。
 
 ## 12.4 假设与兜底

@@ -832,9 +832,19 @@ func TestPrivatePeersHaveDistinctKeys(t *testing.T) {
 // TestVisionDecisionRequestShape 走完整链路，断言发往 LLM 的请求体形状。
 func TestVisionDecisionRequestShape(t *testing.T) {
 	pngBytes := append([]byte("\x89PNG\r\n\x1a\n"), []byte("payload-bytes")...)
+	jpegBytes := []byte("\xff\xd8\xff\xe0payload-jpeg")
 	imgSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "image/png")
-		_, _ = w.Write(pngBytes)
+		switch r.URL.Path {
+		case "/a.png":
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(pngBytes)
+		case "/b.jpg":
+			w.Header().Set("Content-Type", "image/jpeg")
+			_, _ = w.Write(jpegBytes)
+		default:
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(pngBytes)
+		}
 	}))
 	defer imgSrv.Close()
 
@@ -849,25 +859,28 @@ func TestVisionDecisionRequestShape(t *testing.T) {
 			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"看到了"}}]}`))
 		}
 	}
-	imageEvent := func(user, name string) *bot.Event {
+	imageEvent := func(user, name, path string) *bot.Event {
 		ev := atEvent("g1", user, name, "看这张图")
 		ev.Message.Segments = append(ev.Message.Segments,
-			bot.Segment{Type: bot.SegImage, Data: map[string]any{bot.KeyURL: imgSrv.URL + "/a.png"}})
+			bot.Segment{Type: bot.SegImage, Data: map[string]any{bot.KeyURL: imgSrv.URL + path}})
 		return ev
 	}
-	run := func(t *testing.T, enabled bool, replaceClient bool) (map[string]any, *testEnv) {
+	run := func(t *testing.T, enabled, replaceClient bool, formats []any, imgPath string) (map[string]any, *testEnv) {
 		t.Helper()
 		got := make(chan map[string]any, 1)
 		env := newTestEnv(t, llmStub(got), func(c map[string]any) {
 			fastConfig(c)
 			c["llm_vision_enabled"] = enabled
 			c["llm_vision_max_images"] = 4
+			if formats != nil {
+				c["llm_vision_allowed_formats"] = formats
+			}
 		})
 		if replaceClient {
 			env.p.imgClient = imgSrv.Client() // 绕过地址限制：httptest 监听回环
 		}
-		env.waitLoaded(imageEvent("u1", "张三"))
-		_ = env.deliver(imageEvent("u1", "张三"))
+		env.waitLoaded(imageEvent("u1", "张三", imgPath))
+		_ = env.deliver(imageEvent("u1", "张三", imgPath))
 		if !env.waitSends(1, 2*time.Second) {
 			t.Fatal("应触发一次回复")
 		}
@@ -894,7 +907,7 @@ func TestVisionDecisionRequestShape(t *testing.T) {
 	}
 
 	t.Run("关闭态为仅含 text 块的数组且不含 image_url", func(t *testing.T) {
-		body, _ := run(t, false, true)
+		body, _ := run(t, false, true, nil, "/a.png")
 		parts := userContent(t, body)
 		if len(parts) != 1 {
 			t.Fatalf("关闭态 content 应为长度 1 的数组, got %#v", parts)
@@ -912,7 +925,7 @@ func TestVisionDecisionRequestShape(t *testing.T) {
 	})
 
 	t.Run("开启态内联 base64", func(t *testing.T) {
-		body, _ := run(t, true, true)
+		body, _ := run(t, true, true, nil, "/a.png")
 		parts := userContent(t, body)
 		if len(parts) != 2 {
 			t.Fatalf("开启态 content 应为长度 2 的数组, got %#v", parts)
@@ -940,7 +953,7 @@ func TestVisionDecisionRequestShape(t *testing.T) {
 	})
 
 	t.Run("地址限制生效", func(t *testing.T) {
-		body, env := run(t, true, false)
+		body, env := run(t, true, false, nil, "/a.png")
 		parts := userContent(t, body)
 		if len(parts) != 1 {
 			t.Fatalf("回环图片应被丢弃, got %#v", parts)
@@ -950,6 +963,20 @@ func TestVisionDecisionRequestShape(t *testing.T) {
 		}
 		if !env.cap.hasMsg("persona 图片跳过") {
 			t.Fatal("应记录 persona 图片跳过")
+		}
+	})
+
+	t.Run("格式白名单外不发送图片块", func(t *testing.T) {
+		body, env := run(t, true, true, []any{"png"}, "/b.jpg")
+		parts := userContent(t, body)
+		if len(parts) != 1 {
+			t.Fatalf("白名单外图片应被丢弃, got %#v", parts)
+		}
+		if p0, _ := parts[0].(map[string]any); p0["type"] != "text" {
+			t.Fatalf("首个块 = %#v", parts[0])
+		}
+		if !env.cap.hasAttr("reason", "format") {
+			t.Error("应记录 reason=format 的丢弃日志")
 		}
 	})
 }

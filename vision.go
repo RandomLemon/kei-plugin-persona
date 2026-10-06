@@ -82,6 +82,31 @@ func mediaType(v string) string {
 	return strings.TrimSpace(v)
 }
 
+// imageFormat 归一化图片格式名：去参数与 "image/" 前缀、转小写、jpg 归一到 jpeg。
+// 配置项与响应 MIME 都走这一条归一，故 jpeg/JPEG/image/jpeg/jpg 等价。
+func imageFormat(v string) string {
+	f := strings.ToLower(mediaType(strings.TrimSpace(v)))
+	f = strings.TrimPrefix(f, "image/")
+	if f == "jpg" {
+		f = "jpeg"
+	}
+	return f
+}
+
+// formatSet 把配置中的格式名归一为集合；归一后为空时返回 nil（nil 表示不过滤）。
+func formatSet(list []string) map[string]bool {
+	out := make(map[string]bool, len(list))
+	for _, v := range list {
+		if f := imageFormat(v); f != "" {
+			out[f] = true
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // debugSkipImage 记录一张被丢弃的图片；attrs 含 reason、host，fetch_error 时含 err。
 func (p *Plugin) debugSkipImage(raw, reason string, err error) {
 	attrs := []any{"reason", reason, "host", hostOf(raw)}
@@ -91,7 +116,7 @@ func (p *Plugin) debugSkipImage(raw, reason string, err error) {
 	p.log.Debug("persona 图片跳过", attrs...)
 }
 
-// fetchImageDataURLs 按序下载图片并返回 base64 data URL；失败/超限/非图片的图丢弃，
+// fetchImageDataURLs 按序下载图片并返回 base64 data URL；失败/超限/非图片/格式不在白名单的图丢弃，
 // 保序返回其余。urls 为空时直接返回 nil（不建 ctx、不发请求）。
 func (p *Plugin) fetchImageDataURLs(ctx context.Context, urls []string) []string {
 	if len(urls) == 0 {
@@ -137,6 +162,10 @@ func (p *Plugin) fetchImageDataURLs(ctx context.Context, urls []string) []string
 		}
 		if !strings.HasPrefix(mime, "image/") {
 			p.debugSkipImage(raw, "not_image", nil)
+			continue
+		}
+		if p.cfg.llmVisionAllowedFormats != nil && !p.cfg.llmVisionAllowedFormats[imageFormat(mime)] {
+			p.debugSkipImage(raw, "format", nil)
 			continue
 		}
 		out = append(out, dataURL(mime, data))

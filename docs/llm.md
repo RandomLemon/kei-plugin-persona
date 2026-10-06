@@ -21,7 +21,7 @@
 - `system` 的 `content` 恒为**字符串**，是 `persona_template` 渲染结果，包含 11 个占位符（`{{persona}}`、`{{persona_name}}`、`{{chat_kind}}`、`{{channel_name}}`、`{{channel_id}}`、`{{platform}}`、`{{bot_name}}`、`{{now}}`、`{{last_sender}}`、`{{max_chars}}`、`{{skip_token}}`），模板全文与取值见 [`persona.md`](persona.md) §8.5（本文不重复）。
 - `user` 的 `content` 恒为**数组**：无图片时为单个 `text` 块（内容即历史渲染块，见 [`persona.md`](persona.md) §8.6）；`llm_vision_enabled=true` 时追加最多 `llm_vision_max_images` 个 `{"type":"image_url","image_url":{"url":"..."}}` 块。顺序固定：历史渲染块在前，图片在后。
 
-图片块的来源与上限：图片由**插件自己下载**并内联为 `data:<mime>;base64,<数据>`，**不把原始 URL 交给 LLM**；下载用 `PluginContext.HTTPClient` 的 transport 克隆（`Proxy = nil`，`DialContext` 换成地址限制拨号器，见 [`architecture.md`](architecture.md) §5 `vision.go`），整批共用 10s 上限；拒绝回环/私网/链路本地/未指定/组播目标（含 DNS 解析结果）。只有 `SegImage` 的 `KeyURL` 参与；`KeyFile` 仅在取值为 `http(s)://` 开头时参与（本地路径/平台文件 ID 对远端 LLM 不可用，丢弃）。参与选取的是与文本块**同一裁剪结果**的历史（被 `llm_history_max_chars` 裁掉的最旧条目里的图片也不发），每条消息最多 1 张，按时间序取最后至多 `llm_vision_max_images` 张（`0` 表示不附加）。非 2xx、非 `image/*` MIME、超过 `llm_vision_max_image_bytes` 的图一律丢弃且不回落到 URL。`llm_vision_enabled=false` 或 `llm_vision_max_images <= 0` 时不发任何图片块。图片块**不计入** `llm_history_max_chars`（该键只裁文本）。图片 URL 不持久化，进程重启即丢。
+图片块的来源与上限：图片由**插件自己下载**并内联为 `data:<mime>;base64,<数据>`，**不把原始 URL 交给 LLM**；下载用 `PluginContext.HTTPClient` 的 transport 克隆（`Proxy = nil`，`DialContext` 换成地址限制拨号器，见 [`architecture.md`](architecture.md) §5 `vision.go`），整批共用 10s 上限；拒绝回环/私网/链路本地/未指定/组播目标（含 DNS 解析结果）。只有 `SegImage` 的 `KeyURL` 参与；`KeyFile` 仅在取值为 `http(s)://` 开头时参与（本地路径/平台文件 ID 对远端 LLM 不可用，丢弃）。参与选取的是与文本块**同一裁剪结果**的历史（被 `llm_history_max_chars` 裁掉的最旧条目里的图片也不发），每条消息最多 1 张，按时间序取最后至多 `llm_vision_max_images` 张（`0` 表示不附加）。非 2xx、非 `image/*` MIME、超过 `llm_vision_max_image_bytes` 的图一律丢弃且不回落到 URL。`llm_vision_allowed_formats` 非空时只发送归一后格式名在清单内的图片（MIME 先取响应 `Content-Type`，非 `image/*` 时回落 `http.DetectContentType`），清单外的图丢弃（`reason=format`）且不回落到传 URL；不做格式转码。`llm_vision_enabled=false` 或 `llm_vision_max_images <= 0` 时不发任何图片块。图片块**不计入** `llm_history_max_chars`（该键只裁文本）。图片 URL 不持久化，进程重启即丢。
 
 **注入缝（逐字）**：
 
@@ -95,9 +95,10 @@ type openaiClient struct { // 实现 completer
 | `llm_history_max_chars` | 限制**输入历史字符数**（rune） | `4000` |
 | `llm_vision_max_images` | 单次请求附加的图片数 | `4` |
 | `llm_vision_max_image_bytes` | 单张图片下载体积上限 | `4194304` |
+| `llm_vision_allowed_formats` | 允许附加的图片格式白名单（空 = 不过滤） | `[]` |
 | `reply_max_chars` | 对 LLM 输出做**二次硬截断** | `200` |
 
-三者关系：输入长度由 `context_max_messages` + `llm_history_max_chars` 双重限制（超限从最旧丢弃、始终保留最新一条）；输出长度由 `llm_max_tokens` 限制，再由 `reply_max_chars` 兜底截断。默认值即推荐取值。图片体积由 `llm_vision_max_image_bytes` 逐张限制（超限丢弃，不截断）。
+三者关系：输入长度由 `context_max_messages` + `llm_history_max_chars` 双重限制（超限从最旧丢弃、始终保留最新一条）；输出长度由 `llm_max_tokens` 限制，再由 `reply_max_chars` 兜底截断。默认值即推荐取值。图片体积由 `llm_vision_max_image_bytes` 逐张限制（超限丢弃，不截断）；图片格式由 `llm_vision_allowed_formats` 过滤（不在白名单的丢弃，不转码）。
 
 ## 9.5 安全与日志
 
