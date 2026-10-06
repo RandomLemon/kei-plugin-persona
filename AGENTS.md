@@ -56,6 +56,7 @@
 8. 日志使用 `log/slog`，字段化输出；键名与值风格沿用 kei 核心（小写、下划线）。
 9. 测试使用标准库 `testing`，不引入第三方 mock 库。
 10. 禁止在插件中引入 `internal/` 包。
+11. commit message 与 tag message 必须用英文撰写。
 
 ## 5. 项目结构与文档索引
 
